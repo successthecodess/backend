@@ -2,6 +2,7 @@ import { Router } from 'express';
 import {
   getAdminStats,
   getAllQuestions,
+  getQuestion,  // Add this import
   createQuestion,
   updateQuestion,
   deleteQuestion,
@@ -12,11 +13,12 @@ import { upload } from '../middleware/upload.js';
 
 const router = Router();
 
-// Stats
-router.get('/stats', getAdminStats);
+// Dashboard Stats
+router.get('/dashboard/stats', getAdminStats);  
 
 // Questions CRUD
 router.get('/questions', getAllQuestions);
+router.get('/questions/:questionId', getQuestion);  
 router.post('/questions', createQuestion);
 router.put('/questions/:questionId', updateQuestion);
 router.delete('/questions/:questionId', deleteQuestion);

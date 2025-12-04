@@ -25,12 +25,13 @@ interface PerformancePattern {
 }
 
 export class AdaptiveLearningService {
-  // Difficulty progression rules - More balanced
-  private readonly CORRECT_STREAK_TO_ADVANCE = 3;
-  private readonly WRONG_STREAK_TO_DECREASE = 2;
-  private readonly MASTERY_THRESHOLD_HIGH = 85;
-  private readonly MASTERY_THRESHOLD_MEDIUM = 70;
-  private readonly MASTERY_THRESHOLD_LOW = 55;
+  // Difficulty progression rules
+  private readonly CORRECT_STREAK_TO_ADVANCE = 3; // 3 correct in a row
+  private readonly WRONG_STREAK_TO_DECREASE = 2; // 2 wrong in a row
+  private readonly MASTERY_THRESHOLD_TO_ADVANCE = 70; // 70% mastery to advance
+  private readonly MASTERY_THRESHOLD_TO_DECREASE = 50; // Below 50% to decrease
+  private readonly MIN_ATTEMPTS_FOR_ADVANCEMENT = 5; // At least 5 attempts before advancing
+  private readonly MIN_ATTEMPTS_FOR_DECREASE = 3; // Can decrease after 3 attempts
 
   // Spaced repetition constants (SM-2 Algorithm)
   private readonly MIN_EASE_FACTOR = 1.3;
@@ -54,7 +55,7 @@ export class AdaptiveLearningService {
   }
 
   /**
-   * Determine next difficulty based on comprehensive performance metrics
+   * Determine next difficulty based on performance - STRICT REQUIREMENTS
    */
   getNextDifficulty(
     currentDifficulty: DifficultyLevel,
@@ -67,47 +68,79 @@ export class AdaptiveLearningService {
     const difficulties: DifficultyLevel[] = ['EASY', 'MEDIUM', 'HARD', 'EXPERT'];
     const currentIndex = difficulties.indexOf(currentDifficulty);
 
+    console.log('\n🎯 Difficulty Analysis:', {
+      current: currentDifficulty,
+      consecutiveCorrect,
+      consecutiveWrong,
+      masteryLevel,
+      totalAttempts,
+      recentAccuracy,
+    });
+
+    // CRITICAL: Need minimum attempts before ANY change
     if (totalAttempts < 3) {
+      console.log('⏳ Too few attempts (need 3+), staying at', currentDifficulty);
       return currentDifficulty;
     }
 
-    const shouldAdvance = 
-      consecutiveCorrect >= this.CORRECT_STREAK_TO_ADVANCE &&
-      masteryLevel >= this.MASTERY_THRESHOLD_MEDIUM &&
-      recentAccuracy >= 75 &&
-      totalAttempts >= 5;
-
-    if (shouldAdvance && currentIndex < difficulties.length - 1) {
-      console.log(`🎯 Advancing difficulty: ${currentDifficulty} → ${difficulties[currentIndex + 1]}`);
-      return difficulties[currentIndex + 1];
-    }
-
+    // DECREASE difficulty (help struggling students)
     const shouldDecrease = 
       consecutiveWrong >= this.WRONG_STREAK_TO_DECREASE ||
-      (recentAccuracy < 50 && totalAttempts >= 10) ||
-      (masteryLevel < this.MASTERY_THRESHOLD_LOW && totalAttempts >= 10) ||
-      (currentIndex >= 2 && recentAccuracy < 60 && totalAttempts >= 8);
+      (masteryLevel < this.MASTERY_THRESHOLD_TO_DECREASE && totalAttempts >= 5) ||
+      (recentAccuracy < 40 && totalAttempts >= this.MIN_ATTEMPTS_FOR_DECREASE);
 
     if (shouldDecrease && currentIndex > 0) {
-      console.log(`📉 Decreasing difficulty: ${currentDifficulty} → ${difficulties[currentIndex - 1]}`);
+      console.log(`📉 Decreasing: ${currentDifficulty} → ${difficulties[currentIndex - 1]}`);
+      console.log(`   Reason: ${consecutiveWrong >= 2 ? '2+ wrong in a row' : masteryLevel < 50 ? 'Low mastery' : 'Low recent accuracy'}`);
       return difficulties[currentIndex - 1];
     }
 
-    if (currentIndex === 3 && recentAccuracy < 65 && totalAttempts >= 6) {
-      console.log(`📉 Dropping from EXPERT due to recent struggles`);
-      return difficulties[2];
+    // INCREASE difficulty - VERY STRICT REQUIREMENTS
+    const shouldAdvance = 
+      consecutiveCorrect >= this.CORRECT_STREAK_TO_ADVANCE && // Need 3 in a row
+      masteryLevel >= this.MASTERY_THRESHOLD_TO_ADVANCE && // Need 70% mastery
+      recentAccuracy >= 70 && // Need 70% recent accuracy
+      totalAttempts >= this.MIN_ATTEMPTS_FOR_ADVANCEMENT; // Need 5+ total attempts
+
+    if (shouldAdvance && currentIndex < difficulties.length - 1) {
+      console.log(`🎯 Advancing: ${currentDifficulty} → ${difficulties[currentIndex + 1]}`);
+      console.log(`   Requirements met: ${consecutiveCorrect}/${this.CORRECT_STREAK_TO_ADVANCE} streak, ${masteryLevel}%/${this.MASTERY_THRESHOLD_TO_ADVANCE}% mastery, ${recentAccuracy}%/70% recent, ${totalAttempts}/${this.MIN_ATTEMPTS_FOR_ADVANCEMENT} attempts`);
+      return difficulties[currentIndex + 1];
+    } else if (currentIndex < difficulties.length - 1 && (consecutiveCorrect > 0 || masteryLevel > 50)) {
+      // Log why we're NOT advancing (helpful for debugging)
+      console.log(`❌ Not advancing yet:`);
+      if (consecutiveCorrect < this.CORRECT_STREAK_TO_ADVANCE) {
+        console.log(`   - Need ${this.CORRECT_STREAK_TO_ADVANCE - consecutiveCorrect} more correct in a row`);
+      }
+      if (masteryLevel < this.MASTERY_THRESHOLD_TO_ADVANCE) {
+        console.log(`   - Need ${this.MASTERY_THRESHOLD_TO_ADVANCE - masteryLevel}% more mastery`);
+      }
+      if (recentAccuracy < 70) {
+        console.log(`   - Recent accuracy too low (${recentAccuracy}%/70%)`);
+      }
+      if (totalAttempts < this.MIN_ATTEMPTS_FOR_ADVANCEMENT) {
+        console.log(`   - Need ${this.MIN_ATTEMPTS_FOR_ADVANCEMENT - totalAttempts} more attempts`);
+      }
     }
 
-    if (currentIndex === 0 && recentAccuracy >= 90 && totalAttempts >= 4) {
-      console.log(`🎯 Fast-tracking from EASY due to strong performance`);
+    // Fast track from EASY if exceptional (still strict)
+    if (currentIndex === 0 && recentAccuracy >= 90 && totalAttempts >= 5 && consecutiveCorrect >= 4) {
+      console.log(`⚡ Fast-tracking: EASY → MEDIUM (exceptional performance)`);
       return difficulties[1];
     }
 
+    // Drop from HARD/EXPERT if struggling
+    if (currentIndex >= 2 && recentAccuracy < 55 && totalAttempts >= 8) {
+      console.log(`📉 Dropping from ${currentDifficulty} (sustained struggles)`);
+      return difficulties[currentIndex - 1];
+    }
+
+    console.log(`✓ Staying at ${currentDifficulty}`);
     return currentDifficulty;
   }
 
   /**
-   * Calculate mastery level with exponential moving average
+   * Calculate mastery level
    */
   calculateMasteryLevel(
     currentMastery: number,
@@ -118,16 +151,16 @@ export class AdaptiveLearningService {
     if (totalAttempts === 0) return 0;
     
     const overallAccuracy = (correctAttempts / totalAttempts) * 100;
-    const alpha = 0.3;
     const recentImpact = isCorrect ? 100 : 0;
-    const newMastery = (alpha * recentImpact) + ((1 - alpha) * currentMastery);
-    const blendedMastery = (overallAccuracy * 0.6) + (newMastery * 0.4);
+    const alpha = 0.25;
+    const recentMastery = (alpha * recentImpact) + ((1 - alpha) * currentMastery);
+    const blendedMastery = (overallAccuracy * 0.6) + (recentMastery * 0.4);
     
     return Math.min(100, Math.max(0, Math.round(blendedMastery)));
   }
 
   /**
-   * Calculate recent accuracy (last 10 attempts)
+   * Calculate recent accuracy (last 8 attempts)
    */
   private async calculateRecentAccuracy(userId: string, unitId: string): Promise<number> {
     const recentResponses = await prisma.questionResponse.findMany({
@@ -136,7 +169,7 @@ export class AdaptiveLearningService {
         question: { unitId },
       },
       orderBy: { createdAt: 'desc' },
-      take: 10,
+      take: 8,
     });
 
     if (recentResponses.length === 0) return 0;
@@ -146,8 +179,7 @@ export class AdaptiveLearningService {
   }
 
   /**
-   * Spaced Repetition: Calculate next review date using SM-2 algorithm
-   * WITH SAFETY CAPS to prevent date overflow
+   * Spaced Repetition: Calculate next review date
    */
   calculateNextReview(
     currentInterval: number,
@@ -170,7 +202,6 @@ export class AdaptiveLearningService {
       }
     }
 
-    // CRITICAL: Cap interval to prevent overflow
     nextInterval = Math.min(nextInterval, this.MAX_INTERVAL_DAYS);
 
     const nextReviewDate = new Date();
@@ -184,7 +215,7 @@ export class AdaptiveLearningService {
   }
 
   /**
-   * Convert answer correctness and time to SM-2 quality (0-5)
+   * Convert answer correctness and time to SM-2 quality
    */
   private calculateQuality(isCorrect: boolean, timeSpent?: number, averageTime?: number): number {
     if (!isCorrect) return 0;
@@ -206,7 +237,7 @@ export class AdaptiveLearningService {
   }
 
   /**
-   * Track performance patterns and identify weak areas
+   * Track performance patterns
    */
   async analyzePerformancePatterns(userId: string, unitId: string): Promise<PerformancePattern> {
     const responses = await prisma.questionResponse.findMany({
@@ -280,55 +311,60 @@ export class AdaptiveLearningService {
   /**
    * Update user progress after answering a question
    */
-  async updateProgress(
-    userId: string,
-    questionId: string,
-    isCorrect: boolean,
-    timeSpent?: number
-  ) {
-    console.log('📊 Updating progress:', { userId, questionId, isCorrect });
+async updateProgress(
+  userId: string,
+  questionId: string,
+  isCorrect: boolean,
+  timeSpent?: number
+) {
+  console.log('📊 Updating progress:', { userId, questionId, isCorrect });
 
-    try {
-      const question = await prisma.question.findUnique({
-        where: { id: questionId },
-        include: {
-          unit: true,
-          topic: true,
+  try {
+    const question = await prisma.question.findUnique({
+      where: { id: questionId },
+      include: {
+        unit: true,
+        topic: true,
+      },
+    });
+
+    if (!question) {
+      console.error('❌ Question not found:', questionId);
+      throw new AppError('Question not found', 404);
+    }
+
+    const unitId = question.unitId;
+    // CRITICAL FIX: Always use unit-level tracking (topicId = undefined)
+    const topicId = undefined; // <-- CHANGED FROM: question.topicId || undefined;
+
+    console.log('📚 Question Details:');
+    console.log('   - Unit ID:', unitId);
+    console.log('   - Unit Name:', question.unit?.name);
+    console.log('   - Tracking at UNIT level (no topic)');
+
+    let progress = await this.findProgress(userId, unitId, topicId);
+
+    if (!progress) {
+      console.log('🆕 Creating new progress record (starting at EASY)...');
+      progress = await prisma.progress.create({
+        data: {
+          userId,
+          unitId,
+          topicId: null, // <-- EXPLICITLY NULL for unit-level tracking
+          currentDifficulty: 'EASY',
+          totalAttempts: 0,
+          correctAttempts: 0,
+          consecutiveCorrect: 0,
+          consecutiveWrong: 0,
+          masteryLevel: 0,
+          easeFactor: this.DEFAULT_EASE_FACTOR,
+          interval: 0,
+          totalTimeSpent: 0,
+          averageTimePerQuestion: 0,
         },
       });
+    }
 
-      if (!question) {
-        console.error('❌ Question not found:', questionId);
-        throw new AppError('Question not found', 404);
-      }
-
-      const unitId = question.unitId;
-      const topicId = question.topicId || undefined; // Convert null to undefined
-
-      console.log('📚 Question unit:', question.unit?.name, 'Topic:', question.topic?.name || 'None');
-
-      let progress = await this.findProgress(userId, unitId, topicId);
-
-      if (!progress) {
-        console.log('Creating new progress record...');
-        progress = await prisma.progress.create({
-          data: {
-            userId,
-            unitId,
-            topicId: topicId || null, // Convert undefined back to null for database
-            currentDifficulty: 'EASY',
-            totalAttempts: 0,
-            correctAttempts: 0,
-            consecutiveCorrect: 0,
-            consecutiveWrong: 0,
-            masteryLevel: 0,
-            easeFactor: this.DEFAULT_EASE_FACTOR,
-            interval: 0,
-            totalTimeSpent: 0,
-            averageTimePerQuestion: 0,
-          },
-        });
-      }
 
       const newConsecutiveCorrect = isCorrect ? progress.consecutiveCorrect + 1 : 0;
       const newConsecutiveWrong = !isCorrect ? progress.consecutiveWrong + 1 : 0;
@@ -344,12 +380,11 @@ export class AdaptiveLearningService {
 
       const recentAccuracy = await this.calculateRecentAccuracy(userId, unitId);
 
-      console.log('📊 Performance Metrics:', {
-        consecutiveCorrect: newConsecutiveCorrect,
-        consecutiveWrong: newConsecutiveWrong,
-        masteryLevel: newMasteryLevel,
-        recentAccuracy,
-        totalAttempts: newTotalAttempts,
+      console.log('📊 Stats:', {
+        streak: isCorrect ? `${newConsecutiveCorrect} ✓` : `${newConsecutiveWrong} ✗`,
+        mastery: `${newMasteryLevel}%`,
+        recent: `${recentAccuracy}%`,
+        overall: `${Math.round((newCorrectAttempts / newTotalAttempts) * 100)}%`,
       });
 
       const newDifficulty = this.getNextDifficulty(
@@ -390,16 +425,16 @@ export class AdaptiveLearningService {
           easeFactor: nextEaseFactor,
           interval: nextInterval,
           nextReviewDate: nextReviewDate,
-          strugglingTopics: patterns.weakTopics.length > 0 ? patterns.weakTopics : null,
-          commonMistakes: Object.keys(patterns.commonMistakes).length > 0 ? patterns.commonMistakes : null,
+          strugglingTopics: patterns.weakTopics.length > 0 ? patterns.weakTopics : undefined,
+          commonMistakes: Object.keys(patterns.commonMistakes).length > 0 ? patterns.commonMistakes : undefined,
         },
       });
 
-      console.log('✅ Progress updated:', {
-        mastery: updatedProgress.masteryLevel,
+      console.log('✅ Updated:', {
         difficulty: updatedProgress.currentDifficulty,
-        streak: isCorrect ? updatedProgress.consecutiveCorrect : updatedProgress.consecutiveWrong,
+        mastery: `${updatedProgress.masteryLevel}%`,
       });
+      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
       return {
         currentDifficulty: updatedProgress.currentDifficulty,
@@ -434,22 +469,44 @@ export class AdaptiveLearningService {
     };
   }
 
-  async getRecommendedDifficulty(userId: string, unitId: string, topicId?: string): Promise<DifficultyLevel> {
-    const progress = await this.getProgress(userId, unitId, topicId);
-    
-    if (!progress) {
-      return 'EASY';
-    }
-
-    if (progress.nextReviewDate && new Date() >= progress.nextReviewDate) {
-      console.log('📅 Spaced repetition: Review needed for this topic');
-      const difficulties: DifficultyLevel[] = ['EASY', 'MEDIUM', 'HARD', 'EXPERT'];
-      const currentIndex = difficulties.indexOf(progress.currentDifficulty);
-      return currentIndex > 0 ? difficulties[currentIndex - 1] : progress.currentDifficulty;
-    }
-
-    return progress.currentDifficulty;
+  /**
+   * Get recommended difficulty - returns student's current level
+   */
+ /**
+ * Get recommended difficulty - returns student's current level
+ */
+async getRecommendedDifficulty(userId: string, unitId: string, topicId?: string): Promise<DifficultyLevel> {
+  console.log('   → Checking progress for user:', userId);
+  
+  const progress = await this.getProgress(userId, unitId, topicId);
+  
+  // New students start at EASY
+  if (!progress) {
+    console.log('   → No progress found - New student');
+    console.log('   → Returning: EASY');
+    return 'EASY';
   }
+
+  console.log('   → Progress found:');
+  console.log('      - Current Difficulty:', progress.currentDifficulty);
+  console.log('      - Total Attempts:', progress.totalAttempts);
+  console.log('      - Mastery:', progress.masteryLevel + '%');
+  console.log('      - Consecutive Correct:', progress.consecutiveCorrect);
+  console.log('      - Consecutive Wrong:', progress.consecutiveWrong);
+
+  // Check if review is needed (spaced repetition)
+  if (progress.nextReviewDate && new Date() >= progress.nextReviewDate) {
+    console.log('   → Review needed - dropping one level');
+    const difficulties: DifficultyLevel[] = ['EASY', 'MEDIUM', 'HARD', 'EXPERT'];
+    const currentIndex = difficulties.indexOf(progress.currentDifficulty);
+    const reviewLevel = currentIndex > 0 ? difficulties[currentIndex - 1] : progress.currentDifficulty;
+    console.log('   → Returning:', reviewLevel);
+    return reviewLevel;
+  }
+
+  console.log('   → Returning:', progress.currentDifficulty);
+  return progress.currentDifficulty;
+}
 
   async getLearningInsights(userId: string, unitId: string) {
     const progress = await this.findProgress(userId, unitId);

@@ -250,19 +250,19 @@ export const getAnalytics = asyncHandler(async (req: Request, res: Response) => 
   });
 });
 
-export const downloadAnalyticsReport = asyncHandler(async (req: Request, res: Response) => {
-  const { unitId, timeRange } = req.query;
+// export const downloadAnalyticsReport = asyncHandler(async (req: Request, res: Response) => {
+//   const { unitId, timeRange } = req.query;
 
-  // Reuse the analytics logic
-  // This is a simplified version - in production, you'd generate a proper report
-  const analyticsData = await getAnalytics(req, res);
+//   // Reuse the analytics logic
+//   // This is a simplified version - in production, you'd generate a proper report
+//   //const analyticsData = await getAnalytics(req, res);
 
-  res.status(200).json({
-    status: 'success',
-    data: {
-      generatedAt: new Date().toISOString(),
-      parameters: { unitId, timeRange },
-      report: analyticsData,
-    },
-  });
-});
+//   res.status(200).json({
+//     status: 'success',
+//     data: {
+//       generatedAt: new Date().toISOString(),
+//       parameters: { unitId, timeRange },
+//       report: analyticsData,
+//     },
+//   });
+// });

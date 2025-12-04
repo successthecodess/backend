@@ -39,6 +39,29 @@ export const getAllQuestions = asyncHandler(async (req: Request, res: Response) 
   });
 });
 
+export const getQuestion = asyncHandler(async (req: Request, res: Response) => {
+  const { questionId } = req.params;
+
+  console.log('📝 Getting question:', questionId);
+
+  const question = await prisma.question.findUnique({
+    where: { id: questionId },
+    include: {
+      unit: true,
+      topic: true,
+    },
+  });
+
+  if (!question) {
+    throw new AppError('Question not found', 404);
+  }
+
+  res.status(200).json({
+    status: 'success',
+    data: { question },
+  });
+});
+
 export const createQuestion = asyncHandler(async (req: Request, res: Response) => {
   const {
     unitId,
