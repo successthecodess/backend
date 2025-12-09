@@ -1,39 +1,388 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
-
 generator client {
   provider = "prisma-client-js"
-  // output   = "../generated/prisma"
 }
 
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
 }
+
 model User {
-  id            String    @id @default(cuid())
-  email         String    @unique
-  name          String?
-  password      String
-  role          UserRole  @default(STUDENT)
-  isPremium     Boolean   @default(false)
-  premiumUntil  DateTime?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
-  lastActive    DateTime  @default(now())
-  
-  // Relations
+  id                String             @id @default(cuid())
+  email             String             @unique
+  name              String?
+  password          String?
+  ghlUserId         String?   @unique
+  ghlAccessToken    String?   @db.Text
+  ghlRefreshToken   String?   @db.Text
+  ghlTokenExpiry    DateTime?
+  ghlLocationId     String?
+  ghlCompanyId      String?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  isPremium         Boolean            @default(false)
+  lastActive        DateTime           @default(now())
+  premiumUntil      DateTime?
+  role              UserRole           @default(STUDENT)
+  examAttempts      ExamAttempt[]
   progress          Progress[]
   questionResponses QuestionResponse[]
-  examAttempts      ExamAttempt[]
   studySessions     StudySession[]
   achievements      UserAchievement[]
-  
+
   @@index([email])
   @@map("users")
+}
+
+model PlatformSettings {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  value     String
+  category  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Unit {
+  id          String     @id @default(cuid())
+  unitNumber  Int        @unique
+  name        String
+  description String?
+  createdAt   DateTime   @default(now())
+  color       String?
+  icon        String?
+  isActive    Boolean    @default(true)
+  orderIndex  Int        @default(0)
+  updatedAt   DateTime   @updatedAt
+  progress    Progress[]
+  questions   Question[]
+  topics      Topic[]
+
+  @@index([unitNumber])
+  @@index([isActive])
+  @@map("units")
+}
+
+model Topic {
+  id                 String     @id @default(cuid())
+  name               String
+  description        String?
+  unitId             String
+  createdAt          DateTime   @default(now())
+  isActive           Boolean    @default(true)
+  learningObjectives String[]
+  orderIndex         Int        @default(0)
+  prerequisites      String[]
+  updatedAt          DateTime   @updatedAt
+  progress           Progress[]
+  questions          Question[]
+  unit               Unit       @relation(fields: [unitId], references: [id], onDelete: Cascade)
+
+  @@index([unitId])
+  @@index([isActive])
+  @@map("topics")
+}
+
+model Question {
+  id                  String             @id @default(cuid())
+  unitId              String
+  topicId             String?
+  type                QuestionType
+  difficulty          DifficultyLevel
+  questionText        String
+  options             Json?
+  correctAnswer       String
+  explanation         String
+  aiGenerated         Boolean            @default(false)
+  approved            Boolean            @default(false)
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+  apLearningObjective String?
+  apSkillCategory     String?
+  averageTime         Float?
+  bloomsLevel         String?
+  codeSnippet         String?
+  estimatedTime       Int?
+  hints               Json?
+  isActive            Boolean            @default(true)
+  qualityScore        Float?
+  tags                String[]
+  timesAttempted      Int                @default(0)
+  timesCorrect        Int                @default(0)
+  examQuestions       ExamQuestion[]
+  responses           QuestionResponse[]
+  topic               Topic?             @relation(fields: [topicId], references: [id])
+  unit                Unit               @relation(fields: [unitId], references: [id], onDelete: Cascade)
+
+  @@index([unitId, difficulty])
+  @@index([topicId, difficulty])
+  @@index([approved, isActive])
+  @@index([aiGenerated])
+  @@map("questions")
+}
+
+model Progress {
+  id                     String          @id @default(cuid())
+  userId                 String
+  unitId                 String
+  topicId                String?
+  currentDifficulty      DifficultyLevel @default(EASY)
+  totalAttempts          Int             @default(0)
+  correctAttempts        Int             @default(0)
+  lastPracticed          DateTime        @default(now())
+  updatedAt              DateTime        @updatedAt
+  averageTimePerQuestion Float?
+  commonMistakes         Json?
+  confidenceScore        Float           @default(0)
+  consecutiveCorrect     Int             @default(0)
+  consecutiveWrong       Int             @default(0)
+  createdAt              DateTime        @default(now())
+  easeFactor             Float           @default(2.5)
+  interval               Int             @default(1)
+  masteryLevel           Float           @default(0)
+  nextReviewDate         DateTime?
+  reviewCount            Int             @default(0)
+  strugglingTopics       Json?
+  totalTimeSpent         Int             @default(0)
+  topic                  Topic?          @relation(fields: [topicId], references: [id])
+  unit                   Unit            @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  user                   User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, unitId, topicId], map: "userId_unitId_topicId")
+  @@index([userId, masteryLevel])
+  @@index([nextReviewDate])
+  @@map("progress")
+}
+
+model QuestionResponse {
+  id               String          @id @default(cuid())
+  userId           String
+  questionId       String
+  userAnswer       String
+  isCorrect        Boolean
+  timeSpent        Int?
+  createdAt        DateTime        @default(now())
+  attemptNumber    Int             @default(1)
+  difficultyAtTime DifficultyLevel
+  examAttemptId    String?
+  flaggedForReview Boolean         @default(false)
+  hintsUsedCount   Int             @default(0)
+  notes            String?
+  partialCredit    Float?
+  sessionId        String?
+  startedAt        DateTime        @default(now())
+  submittedAt      DateTime        @default(now())
+  usedHints        Boolean         @default(false)
+  userConfidence   Int?
+  question         Question        @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  studySession     StudySession?   @relation(fields: [sessionId], references: [id])
+  user             User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, questionId])
+  @@index([userId, isCorrect])
+  @@index([sessionId])
+  @@map("question_responses")
+}
+
+model StudySession {
+  id              String             @id @default(cuid())
+  userId          String
+  unitId          String?
+  topicId         String?
+  sessionType     SessionType        @default(PRACTICE)
+  totalQuestions  Int                @default(0)
+  correctAnswers  Int                @default(0)
+  averageTime     Float?
+  accuracyRate    Float?
+  startedAt       DateTime           @default(now())
+  endedAt         DateTime?
+  totalDuration   Int?
+  targetQuestions Int?
+  targetAccuracy  Float?
+  goalAchieved    Boolean            @default(false)
+  notes           String?
+  createdAt       DateTime           @default(now())
+  responses       QuestionResponse[]
+  user            User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, startedAt])
+  @@index([sessionType])
+  @@map("study_sessions")
+}
+
+model Exam {
+  id                     String         @id @default(cuid())
+  name                   String
+  description            String?
+  totalQuestions         Int
+  duration               Int
+  unitDistribution       Json
+  isPremium              Boolean        @default(false)
+  createdAt              DateTime       @default(now())
+  createdBy              String?
+  difficultyDistribution Json?
+  examType               ExamType       @default(PRACTICE)
+  frqCount               Int            @default(0)
+  isActive               Boolean        @default(true)
+  isPublished            Boolean        @default(false)
+  mcqCount               Int            @default(0)
+  passingScore           Float?
+  scoreRanges            Json?
+  updatedAt              DateTime       @updatedAt
+  version                String         @default("1.0")
+  attempts               ExamAttempt[]
+  questions              ExamQuestion[]
+
+  @@index([examType, isPublished])
+  @@index([isPremium])
+  @@map("exams")
+}
+
+model ExamQuestion {
+  id         String   @id @default(cuid())
+  examId     String
+  questionId String
+  orderIndex Int
+  createdAt  DateTime @default(now())
+  points     Float    @default(1)
+  section    String?
+  exam       Exam     @relation(fields: [examId], references: [id], onDelete: Cascade)
+  question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@unique([examId, orderIndex])
+  @@index([examId])
+  @@map("exam_questions")
+}
+
+model ExamAttempt {
+  id                  String     @id @default(cuid())
+  userId              String
+  examId              String
+  predictedAPScore    Int?
+  startedAt           DateTime   @default(now())
+  responses           Json
+  confidenceData      Json?
+  createdAt           DateTime   @default(now())
+  difficultyBreakdown Json?
+  frqScore            Float?
+  mcqScore            Float?
+  percentageScore     Float?
+  rawScore            Float?
+  recommendations     Json?
+  reviewNotes         String?
+  reviewedAt          DateTime?
+  status              ExamStatus @default(IN_PROGRESS)
+  strengths           String[]
+  submittedAt         DateTime?
+  timeByQuestion      Json?
+  timeSpent           Int?
+  topicBreakdown      Json?
+  unitBreakdown       Json?
+  updatedAt           DateTime   @updatedAt
+  weaknesses          String[]
+  exam                Exam       @relation(fields: [examId], references: [id], onDelete: Cascade)
+  user                User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+  @@index([examId, predictedAPScore])
+  @@map("exam_attempts")
+}
+
+model DailyAnalytics {
+  id                 String   @id @default(cuid())
+  userId             String
+  date               DateTime @db.Date
+  questionsAttempted Int      @default(0)
+  questionsCorrect   Int      @default(0)
+  studyTime          Int      @default(0)
+  sessionsCount      Int      @default(0)
+  averageAccuracy    Float?
+  averageTime        Float?
+  studyStreak        Int      @default(0)
+  perfectDays        Int      @default(0)
+  unitsStudied       String[]
+  topicsStudied      String[]
+  dailyGoalMet       Boolean  @default(false)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@unique([userId, date])
+  @@index([userId, date])
+  @@map("daily_analytics")
+}
+
+model WeeklyAnalytics {
+  id                 String   @id @default(cuid())
+  userId             String
+  weekStart          DateTime @db.Date
+  weekEnd            DateTime @db.Date
+  totalQuestions     Int      @default(0)
+  totalCorrect       Int      @default(0)
+  totalStudyTime     Int      @default(0)
+  averageAccuracy    Float?
+  accuracyTrend      String?
+  mostImprovedUnit   String?
+  needsAttentionUnit String?
+  activeDays         Int      @default(0)
+  longestStreak      Int      @default(0)
+  peakStudyDay       String?
+  unitsCovered       String[]
+  topicsMastered     String[]
+  createdAt          DateTime @default(now())
+
+  @@unique([userId, weekStart])
+  @@index([userId, weekStart])
+  @@map("weekly_analytics")
+}
+
+model Achievement {
+  id               String              @id @default(cuid())
+  name             String              @unique
+  description      String
+  category         AchievementCategory
+  icon             String?
+  points           Int                 @default(0)
+  criteria         Json
+  rarity           String              @default("common")
+  isActive         Boolean             @default(true)
+  createdAt        DateTime            @default(now())
+  userAchievements UserAchievement[]
+
+  @@map("achievements")
+}
+
+model UserAchievement {
+  id            String      @id @default(cuid())
+  userId        String
+  achievementId String
+  progress      Float       @default(0)
+  isUnlocked    Boolean     @default(false)
+  unlockedAt    DateTime?
+  isDisplayed   Boolean     @default(false)
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  achievement   Achievement @relation(fields: [achievementId], references: [id], onDelete: Cascade)
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, achievementId])
+  @@index([userId, isUnlocked])
+  @@map("user_achievements")
+}
+
+model ContentReview {
+  id             String       @id @default(cuid())
+  questionId     String
+  reviewerId     String
+  status         ReviewStatus
+  qualityScore   Int?
+  feedback       String?
+  suggestedEdits Json?
+  hasErrors      Boolean      @default(false)
+  needsRevision  Boolean      @default(false)
+  reviewedAt     DateTime     @default(now())
+
+  @@index([questionId, status])
+  @@map("content_reviews")
 }
 
 enum UserRole {
@@ -41,65 +390,6 @@ enum UserRole {
   TEACHER
   ADMIN
 }
-model PlatformSettings {
-  id        String   @id @default(cuid())
-  key       String   @unique
-  value     String   // Store as JSON string
-  category  String   // general, questions, adaptive, notifications, security, api
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-}
-// ============================================
-// CURRICULUM STRUCTURE
-// ============================================
-
-model Unit {
-  id          String   @id @default(cuid())
-  unitNumber  Int      @unique
-  name        String
-  description String?
-  icon        String?   // For UI display
-  color       String?   // For UI theming
-  isActive    Boolean  @default(true)
-  orderIndex  Int      @default(0)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  
-  // Relations
-  topics      Topic[]
-  questions   Question[]
-  progress    Progress[]
-  
-  @@index([unitNumber])
-  @@index([isActive])
-  @@map("units")
-}
-
-model Topic {
-  id          String   @id @default(cuid())
-  name        String
-  description String?
-  unitId      String
-  orderIndex  Int      @default(0)
-  isActive    Boolean  @default(true)
-  learningObjectives String[] // Array of learning objectives
-  prerequisites String[] // Topic IDs that should be learned first
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  
-  // Relations
-  unit        Unit     @relation(fields: [unitId], references: [id], onDelete: Cascade)
-  questions   Question[]
-  progress    Progress[]
-  
-  @@index([unitId])
-  @@index([isActive])
-  @@map("topics")
-}
-
-// ============================================
-// QUESTIONS & CONTENT
-// ============================================
 
 enum QuestionType {
   MULTIPLE_CHOICE
@@ -116,236 +406,12 @@ enum DifficultyLevel {
   EXPERT
 }
 
-model Question {
-  id              String          @id @default(cuid())
-  unitId          String
-  topicId         String?
-  type            QuestionType
-  difficulty      DifficultyLevel
-  
-  // Question Content
-  questionText    String          @db.Text
-  codeSnippet     String?         @db.Text // For code-based questions
-  options         Json?           // For MCQ: ["A) Option 1", "B) Option 2", ...]
-  correctAnswer   String          @db.Text
-  explanation     String          @db.Text
-  hints           Json?           // Array of progressive hints
-  
-  // Metadata
-  aiGenerated     Boolean         @default(false)
-  approved        Boolean         @default(false)
-  isActive        Boolean         @default(true) // ADD THIS LINE
-  tags            String[]        // For categorization: ["loops", "arrays", "sorting"]
-  bloomsLevel     String?         // Bloom's Taxonomy level
-  estimatedTime   Int?            // Estimated time in seconds
-  
-  // Quality Metrics
-  timesAttempted  Int             @default(0)
-  timesCorrect    Int             @default(0)
-  averageTime     Float?          // Average time to solve
-  qualityScore    Float?          // Admin-rated quality (1-5)
-  
-  // AP Exam Alignment
-  apLearningObjective String?
-  apSkillCategory String?
-  
-  createdAt       DateTime        @default(now())
-  updatedAt       DateTime        @updatedAt
-  
-  // Relations
-  unit            Unit            @relation(fields: [unitId], references: [id], onDelete: Cascade)
-  topic           Topic?          @relation(fields: [topicId], references: [id], onDelete: SetNull)
-  responses       QuestionResponse[]
-  examQuestions   ExamQuestion[]
-  
-  @@index([unitId, difficulty])
-  @@index([topicId, difficulty])
-  @@index([approved, isActive])
-  @@index([aiGenerated])
-  @@map("questions")
-}
-
-// ============================================
-// STUDENT PROGRESS & ANALYTICS
-// ============================================
-
-model Progress {
-  id                  String          @id @default(cuid())
-  userId              String
-  unitId              String
-  topicId             String?
-  
-  // Current State
-  currentDifficulty   DifficultyLevel @default(EASY)
-  masteryLevel        Float           @default(0)
-  confidenceScore     Float           @default(0)
-  
-  // Performance Metrics
-  totalAttempts       Int             @default(0)
-  correctAttempts     Int             @default(0)
-  consecutiveCorrect  Int             @default(0)
-  consecutiveWrong    Int             @default(0)
-  
-  // Time Tracking
-  totalTimeSpent      Int             @default(0)
-  averageTimePerQuestion Float?
-  lastPracticed       DateTime        @default(now())
-  
-  // Spaced Repetition
-  nextReviewDate      DateTime?
-  reviewCount         Int             @default(0)
-  easeFactor          Float           @default(2.5)
-  interval            Int             @default(1)
-  
-  // Weak Areas
-  strugglingTopics    Json?
-  commonMistakes      Json?
-  
-  createdAt           DateTime        @default(now())
-  updatedAt           DateTime        @updatedAt
-  
-  // Relations
-  user                User            @relation(fields: [userId], references: [id], onDelete: Cascade)
-  unit                Unit            @relation(fields: [unitId], references: [id], onDelete: Cascade)
-  topic               Topic?          @relation(fields: [topicId], references: [id], onDelete: SetNull)
-  
-  @@unique([userId, unitId, topicId], map: "userId_unitId_topicId")
-  @@index([userId, masteryLevel])
-  @@index([nextReviewDate])
-  @@map("progress")
-}
-model QuestionResponse {
-  id              String          @id @default(cuid())
-  userId          String
-  questionId      String
-  
-  // Response Data
-  userAnswer      String          @db.Text
-  isCorrect       Boolean
-  partialCredit   Float?          // For FRQ: 0-1 scale
-  
-  // Context
-  attemptNumber   Int             @default(1) // Which attempt for this question
-  usedHints       Boolean         @default(false)
-  hintsUsedCount  Int             @default(0)
-  
-  // Time Tracking
-  timeSpent       Int?            // in seconds
-  startedAt       DateTime        @default(now())
-  submittedAt     DateTime        @default(now())
-  
-  // Learning Context
-  difficultyAtTime DifficultyLevel // User's difficulty level when attempted
-  sessionId       String?         // Link to study session
-  examAttemptId   String?         // If part of exam
-  
-  // Feedback
-  userConfidence  Int?            // 1-5 scale
-  flaggedForReview Boolean        @default(false)
-  notes           String?         @db.Text
-  
-  createdAt       DateTime        @default(now())
-  
-  // Relations
-  user            User            @relation(fields: [userId], references: [id], onDelete: Cascade)
-  question        Question        @relation(fields: [questionId], references: [id], onDelete: Cascade)
-  studySession    StudySession?   @relation(fields: [sessionId], references: [id], onDelete: SetNull)
-  
-  @@index([userId, questionId])
-  @@index([userId, isCorrect])
-  @@index([sessionId])
-  @@map("question_responses")
-}
-
-model StudySession {
-  id                String          @id @default(cuid())
-  userId            String
-  
-  // Session Details
-  unitId            String?
-  topicId           String?
-  sessionType       SessionType     @default(PRACTICE)
-  
-  // Performance Summary
-  totalQuestions    Int             @default(0)
-  correctAnswers    Int             @default(0)
-  averageTime       Float?
-  accuracyRate      Float?          // Percentage
-  
-  // Time Tracking
-  startedAt         DateTime        @default(now())
-  endedAt           DateTime?
-  totalDuration     Int?            // in seconds
-  
-  // Goals & Progress
-  targetQuestions   Int?
-  targetAccuracy    Float?
-  goalAchieved      Boolean         @default(false)
-  
-  // Notes
-  notes             String?         @db.Text
-  
-  createdAt         DateTime        @default(now())
-  
-  // Relations
-  user              User            @relation(fields: [userId], references: [id], onDelete: Cascade)
-  responses         QuestionResponse[]
-  
-  @@index([userId, startedAt])
-  @@index([sessionType])
-  @@map("study_sessions")
-}
-
 enum SessionType {
   PRACTICE
   EXAM
   REVIEW
   TIMED_DRILL
   ADAPTIVE
-}
-
-// ============================================
-// PRACTICE EXAMS
-// ============================================
-
-model Exam {
-  id              String          @id @default(cuid())
-  name            String
-  description     String?         @db.Text
-  examType        ExamType        @default(PRACTICE)
-  
-  // Structure
-  totalQuestions  Int
-  duration        Int             // in minutes
-  passingScore    Float?          // Percentage needed to pass
-  
-  // Question Distribution
-  mcqCount        Int             @default(0)
-  frqCount        Int             @default(0)
-  unitDistribution Json           // {"unit1": 0.2, "unit2": 0.15, ...}
-  difficultyDistribution Json?    // {"EASY": 0.3, "MEDIUM": 0.5, "HARD": 0.2}
-  
-  // Access Control
-  isPremium       Boolean         @default(false)
-  isPublished     Boolean         @default(false)
-  isActive        Boolean         @default(true)
-  
-  // AP Score Mapping
-  scoreRanges     Json?           // AP score calculation ranges
-  
-  // Metadata
-  version         String          @default("1.0")
-  createdBy       String?
-  createdAt       DateTime        @default(now())
-  updatedAt       DateTime        @updatedAt
-  
-  // Relations
-  attempts        ExamAttempt[]
-  questions       ExamQuestion[]
-  
-  @@index([examType, isPublished])
-  @@index([isPremium])
-  @@map("exams")
 }
 
 enum ExamType {
@@ -356,183 +422,11 @@ enum ExamType {
   MOCK_AP
 }
 
-model ExamQuestion {
-  id              String          @id @default(cuid())
-  examId          String
-  questionId      String
-  
-  // Ordering & Scoring
-  orderIndex      Int
-  points          Float           @default(1)
-  section         String?         // "MCQ Section" or "FRQ Section"
-  
-  createdAt       DateTime        @default(now())
-  
-  // Relations
-  exam            Exam            @relation(fields: [examId], references: [id], onDelete: Cascade)
-  question        Question        @relation(fields: [questionId], references: [id], onDelete: Cascade)
-  
-  @@unique([examId, orderIndex])
-  @@index([examId])
-  @@map("exam_questions")
-}
-
-model ExamAttempt {
-  id              String          @id @default(cuid())
-  userId          String
-  examId          String
-  
-  // Status
-  status          ExamStatus      @default(IN_PROGRESS)
-  
-  // Scoring
-  rawScore        Float?          // Total points earned
-  percentageScore Float?          // Percentage correct
-  predictedAPScore Int?           // 1-5 predicted AP score
-  
-  // Time Tracking
-  startedAt       DateTime        @default(now())
-  submittedAt     DateTime?
-  timeSpent       Int?            // in seconds
-  
-  // Responses Storage
-  responses       Json            // Complete response data
-  
-  // Analytics & Breakdown
-  mcqScore        Float?
-  frqScore        Float?
-  unitBreakdown   Json?           // Score by unit
-  topicBreakdown  Json?           // Score by topic
-  difficultyBreakdown Json?       // Score by difficulty
-  
-  // Performance Insights
-  strengths       String[]        // Strong topic areas
-  weaknesses      String[]        // Areas needing improvement
-  recommendations Json?           // Personalized study recommendations
-  
-  // Detailed Analytics
-  timeByQuestion  Json?           // Time spent per question
-  confidenceData  Json?           // User confidence per question
-  
-  // Review
-  reviewedAt      DateTime?
-  reviewNotes     String?         @db.Text
-  
-  createdAt       DateTime        @default(now())
-  updatedAt       DateTime        @updatedAt
-  
-  // Relations
-  user            User            @relation(fields: [userId], references: [id], onDelete: Cascade)
-  exam            Exam            @relation(fields: [examId], references: [id], onDelete: Cascade)
-  
-  @@index([userId, status])
-  @@index([examId, predictedAPScore])
-  @@map("exam_attempts")
-}
-
 enum ExamStatus {
   IN_PROGRESS
   COMPLETED
   ABANDONED
   UNDER_REVIEW
-}
-
-// ============================================
-// ANALYTICS & INSIGHTS
-// ============================================
-
-model DailyAnalytics {
-  id              String          @id @default(cuid())
-  userId          String
-  date            DateTime        @db.Date
-  
-  // Activity Metrics
-  questionsAttempted Int          @default(0)
-  questionsCorrect   Int          @default(0)
-  studyTime       Int             @default(0) // in seconds
-  sessionsCount   Int             @default(0)
-  
-  // Performance
-  averageAccuracy Float?
-  averageTime     Float?          // per question
-  
-  // Streak Tracking
-  studyStreak     Int             @default(0)
-  perfectDays     Int             @default(0) // Days with 100% accuracy
-  
-  // Unit Progress
-  unitsStudied    String[]
-  topicsStudied   String[]
-  
-  // Goals
-  dailyGoalMet    Boolean         @default(false)
-  
-  createdAt       DateTime        @default(now())
-  updatedAt       DateTime        @updatedAt
-  
-  @@unique([userId, date])
-  @@index([userId, date])
-  @@map("daily_analytics")
-}
-
-model WeeklyAnalytics {
-  id              String          @id @default(cuid())
-  userId          String
-  weekStart       DateTime        @db.Date
-  weekEnd         DateTime        @db.Date
-  
-  // Aggregate Metrics
-  totalQuestions  Int             @default(0)
-  totalCorrect    Int             @default(0)
-  totalStudyTime  Int             @default(0)
-  averageAccuracy Float?
-  
-  // Improvement Tracking
-  accuracyTrend   String?         // "improving", "stable", "declining"
-  mostImprovedUnit String?
-  needsAttentionUnit String?
-  
-  // Activity Patterns
-  activeDays      Int             @default(0)
-  longestStreak   Int             @default(0)
-  peakStudyDay    String?         // Day of week
-  
-  // Content Coverage
-  unitsCovered    String[]
-  topicsMastered  String[]
-  
-  createdAt       DateTime        @default(now())
-  
-  @@unique([userId, weekStart])
-  @@index([userId, weekStart])
-  @@map("weekly_analytics")
-}
-
-// ============================================
-// GAMIFICATION & ACHIEVEMENTS
-// ============================================
-
-model Achievement {
-  id              String          @id @default(cuid())
-  name            String          @unique
-  description     String
-  category        AchievementCategory
-  icon            String?
-  points          Int             @default(0)
-  
-  // Unlock Criteria
-  criteria        Json            // Flexible criteria definition
-  
-  // Rarity
-  rarity          String          @default("common") // common, rare, epic, legendary
-  
-  isActive        Boolean         @default(true)
-  createdAt       DateTime        @default(now())
-  
-  // Relations
-  userAchievements UserAchievement[]
-  
-  @@map("achievements")
 }
 
 enum AchievementCategory {
@@ -543,56 +437,6 @@ enum AchievementCategory {
   SPEED
   ACCURACY
   DEDICATION
-}
-
-model UserAchievement {
-  id              String          @id @default(cuid())
-  userId          String
-  achievementId   String
-  
-  // Progress
-  progress        Float           @default(0) // 0-100 percentage
-  isUnlocked      Boolean         @default(false)
-  unlockedAt      DateTime?
-  
-  // Display
-  isDisplayed     Boolean         @default(false) // Show on profile
-  
-  createdAt       DateTime        @default(now())
-  updatedAt       DateTime        @updatedAt
-  
-  // Relations
-  user            User            @relation(fields: [userId], references: [id], onDelete: Cascade)
-  achievement     Achievement     @relation(fields: [achievementId], references: [id], onDelete: Cascade)
-  
-  @@unique([userId, achievementId])
-  @@index([userId, isUnlocked])
-  @@map("user_achievements")
-}
-
-// ============================================
-// ADMIN & CONTENT MANAGEMENT
-// ============================================
-
-model ContentReview {
-  id              String          @id @default(cuid())
-  questionId      String
-  reviewerId      String
-  
-  // Review Data
-  status          ReviewStatus
-  qualityScore    Int?            // 1-5
-  feedback        String?         @db.Text
-  suggestedEdits  Json?
-  
-  // Flags
-  hasErrors       Boolean         @default(false)
-  needsRevision   Boolean         @default(false)
-  
-  reviewedAt      DateTime        @default(now())
-  
-  @@index([questionId, status])
-  @@map("content_reviews")
 }
 
 enum ReviewStatus {

@@ -3,8 +3,10 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import unitRoutes from './routes/unitRoutes.js';
 import questionRoutes from './routes/questionRoutes.js';
+import authRoutes from './routes/authRoutes.js';
 import practiceRoutes from './routes/practiceRoutes.js';
-import progressRoutes from './routes/progressRoutes.js';  // Uncommented
+import progressRoutes from './routes/progressRoutes.js'; 
+ 
 import insightsRoutes from './routes/insightsRoutes.js';
 import adminRoutes from './routes/adminRoutes.js';
 import analyticsRoutes from './routes/analyticsRoutes.js';
@@ -24,11 +26,13 @@ app.use(express.json());
 app.use('/api/units', unitRoutes);
 app.use('/api/questions', questionRoutes);
 app.use('/api/practice', practiceRoutes);
-app.use('/api/progress', progressRoutes);  // Added back
+app.use('/api/progress', progressRoutes);  
 app.use('/api/insights', insightsRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/settings', settingsRoutes);
+app.use('/api/auth', authRoutes);
+
 
 // Error handler
 app.use(errorHandler);
