@@ -9,21 +9,25 @@ const GHL_AUTH_URL = 'https://marketplace.gohighlevel.com/oauth/chooselocation';
 const GHL_TOKEN_URL = 'https://services.leadconnectorhq.com/oauth/token';
 const GHL_API_BASE = 'https://services.leadconnectorhq.com';
 
-// Step 1: Initiate OAuth flow
-router.get('/ghl/login', (req, res) => {
+// Step 1: Initiate OAuth flow (CHANGED from /ghl/login to /oauth/login)
+router.get('/oauth/login', (req, res) => {
+  console.log('🔍 Redirect URI:', process.env.GHL_REDIRECT_URI);
+  
   const params = new URLSearchParams({
     response_type: 'code',
     redirect_uri: process.env.GHL_REDIRECT_URI!,
     client_id: process.env.GHL_CLIENT_ID!,
-    scope: 'contacts.readonly users.readonly', // Minimal scopes needed
+    scope: 'contacts.readonly users.readonly',
   });
 
   const authUrl = `${GHL_AUTH_URL}?${params}`;
+  console.log('🔗 Auth URL:', authUrl);
+  
   res.json({ authUrl });
 });
 
-// Step 2: Handle OAuth callback
-router.get('/ghl/callback', async (req, res) => {
+// Step 2: Handle OAuth callback (CHANGED from /ghl/callback to /oauth/callback)
+router.get('/oauth/callback', async (req, res) => {
   const { code } = req.query;
 
   if (!code) {
@@ -58,9 +62,9 @@ router.get('/ghl/callback', async (req, res) => {
       userId: ghlUserId 
     } = tokenResponse.data;
 
-    console.log('✅ GHL Access Token received');
+    console.log('✅ Access Token received');
 
-    // Fetch user/contact data from GHL
+    // Fetch user/contact data
     const userDataResponse = await axios.get(
       `${GHL_API_BASE}/users/${ghlUserId}`,
       {
@@ -72,15 +76,14 @@ router.get('/ghl/callback', async (req, res) => {
     );
 
     const ghlUser = userDataResponse.data;
-    console.log('✅ GHL User Data:', ghlUser);
+    console.log('✅ User Data:', ghlUser);
 
-    // Find or create user in YOUR database
+    // Find or create user in database
     let user = await prisma.user.findUnique({
       where: { ghlUserId }
     });
 
     if (!user) {
-      // Create new user
       user = await prisma.user.create({
         data: {
           ghlUserId,
@@ -95,7 +98,6 @@ router.get('/ghl/callback', async (req, res) => {
       });
       console.log('✅ New user created:', user.id);
     } else {
-      // Update existing user's tokens
       user = await prisma.user.update({
         where: { id: user.id },
         data: {
@@ -126,15 +128,15 @@ router.get('/ghl/callback', async (req, res) => {
     );
 
   } catch (error: any) {
-    console.error('❌ GHL OAuth error:', error.response?.data || error.message);
+    console.error('❌ OAuth error:', error.response?.data || error.message);
     res.redirect(
       `${process.env.FRONTEND_URL}/login?error=auth_failed`
     );
   }
 });
 
-// Step 3: Sync progress back to GHL
-router.post('/ghl/sync-progress', async (req, res) => {
+// Step 3: Sync progress back (CHANGED from /ghl/sync-progress to /oauth/sync-progress)
+router.post('/oauth/sync-progress', async (req, res) => {
   const { userId, progressData } = req.body;
 
   try {
@@ -143,16 +145,16 @@ router.post('/ghl/sync-progress', async (req, res) => {
     });
 
     if (!user || !user.ghlAccessToken) {
-      return res.status(404).json({ error: 'User not found or not connected to GHL' });
+      return res.status(404).json({ error: 'User not found or not connected' });
     }
 
     // Check if token is expired and refresh if needed
     let accessToken = user.ghlAccessToken;
     if (user.ghlTokenExpiry && new Date() >= user.ghlTokenExpiry) {
-      accessToken = await refreshGHLToken(user.id, user.ghlRefreshToken!);
+      accessToken = await refreshToken(user.id, user.ghlRefreshToken!);
     }
 
-    // Update custom fields in GHL contact
+    // Update custom fields in contact
     await axios.put(
       `${GHL_API_BASE}/contacts/${user.ghlUserId}`,
       {
@@ -179,8 +181,8 @@ router.post('/ghl/sync-progress', async (req, res) => {
   }
 });
 
-// Helper function to refresh GHL token
-async function refreshGHLToken(userId: string, refreshToken: string): Promise<string> {
+// Helper function to refresh token
+async function refreshToken(userId: string, refreshToken: string): Promise<string> {
   const response = await axios.post(
     GHL_TOKEN_URL,
     new URLSearchParams({

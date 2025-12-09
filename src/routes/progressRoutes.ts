@@ -1,8 +1,8 @@
 import { Router } from 'express';
 import { progressController } from '../controllers/progressController.js';
-
+import { authenticate } from '../middleware/auth.js';
 const router = Router();
-
+router.use(authenticate);
 // Existing routes
 router.get('/:userId/:unitId', progressController.getUserProgress);
 router.get('/insights/:userId/:unitId', progressController.getLearningInsights);
