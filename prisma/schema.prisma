@@ -33,6 +33,21 @@ model User {
   @@index([email])
   @@map("users")
 }
+model GHLCompanyAuth {
+  id              String   @id @default(cuid())
+  companyId       String   @unique
+  locationId      String?
+  accessToken     String   @db.Text
+  refreshToken    String   @db.Text
+  tokenExpiry     DateTime
+  authorizedBy    String   // Admin who authorized
+  authorizedAt    DateTime @default(now())
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  @@index([companyId])
+}
 
 model PlatformSettings {
   id        String   @id @default(cuid())
