@@ -153,9 +153,12 @@ router.get('/oauth/admin/status', async (req, res) => {
 // STUDENT LOGIN (Uses company token)
 // ==========================================
 
-// Step 1: Student login - verify credentials
 router.post('/oauth/student/login', async (req, res) => {
-  const { email, password } = req.body;
+  const { email } = req.body;
+
+  if (!email) {
+    return res.status(400).json({ error: 'Email is required' });
+  }
 
   try {
     console.log('👤 Student login attempt:', email);
@@ -171,6 +174,8 @@ router.post('/oauth/student/login', async (req, res) => {
       });
     }
 
+    console.log('✅ Found company auth:', companyAuth.companyId);
+
     // Refresh token if expired
     let accessToken = companyAuth.accessToken;
     if (new Date() >= companyAuth.tokenExpiry) {
@@ -178,45 +183,88 @@ router.post('/oauth/student/login', async (req, res) => {
       accessToken = await refreshCompanyToken(companyAuth.companyId, companyAuth.refreshToken);
     }
 
-    // Search for user in GHL by email
-    const searchResponse = await axios.get(
-      `${GHL_API_BASE}/contacts/`,
-      {
-        params: { 
-          email,
-          locationId: companyAuth.locationId 
-        },
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'Version': '2021-07-28'
-        }
-      }
-    );
+    // Search for contact with pagination
+    let ghlContact: any = null;
+    let startAfterId: string | undefined = undefined;
+    let pageCount = 0;
+    const maxPages = 10; // Search up to 1000 contacts
 
-    if (!searchResponse.data.contacts || searchResponse.data.contacts.length === 0) {
-      return res.status(401).json({ error: 'Student not found in Tutor Boss' });
+    console.log('🔍 Searching for contact with email:', email);
+
+    while (!ghlContact && pageCount < maxPages) {
+      const params: any = {
+        locationId: companyAuth.locationId,
+        limit: 100,
+      };
+
+      if (startAfterId) {
+        params.startAfterId = startAfterId;
+      }
+
+      console.log(`📄 Fetching page ${pageCount + 1}...`);
+
+      const listResponse = await axios.get(
+        `${GHL_API_BASE}/contacts/`,
+        {
+          params,
+          headers: {
+            'Authorization': `Bearer ${accessToken}`,
+            'Version': '2021-07-28'
+          }
+        }
+      );
+
+      const contacts = listResponse.data.contacts || [];
+      console.log(`   Found ${contacts.length} contacts on this page`);
+
+      // Search in this batch (case-insensitive)
+      ghlContact = contacts.find((c: any) => 
+        c.email?.toLowerCase() === email.toLowerCase()
+      );
+
+      if (ghlContact) {
+        console.log('✅ Found contact:', ghlContact.id);
+        break;
+      }
+
+      // Check if there are more pages
+      if (contacts.length < 100) {
+        console.log('   No more pages available');
+        break;
+      }
+
+      // Set up for next page
+      startAfterId = contacts[contacts.length - 1].id;
+      pageCount++;
     }
 
-    const ghlContact = searchResponse.data.contacts[0];
-    console.log('✅ Found student in GHL:', ghlContact.id);
+    if (!ghlContact) {
+      console.log(`❌ Contact not found after searching ${pageCount + 1} page(s)`);
+      return res.status(401).json({ 
+        error: 'Student not found in Tutor Boss. Please ensure your email is registered with your instructor.' 
+      });
+    }
 
-    // Verify password against GHL custom field (if you store passwords there)
-    // OR skip password check if you trust GHL email verification
-    // For now, we'll trust that if they know the email, they're authorized
+    console.log('✅ Found student in GHL');
+    console.log('   ID:', ghlContact.id);
+    console.log('   Name:', ghlContact.firstName, ghlContact.lastName);
+    console.log('   Email:', ghlContact.email);
 
     // Create or update user in our database
+    const fullName = `${ghlContact.firstName || ''} ${ghlContact.lastName || ''}`.trim();
+    
     const user = await prisma.user.upsert({
       where: { ghlUserId: ghlContact.id },
       create: {
         email: ghlContact.email,
-        name: `${ghlContact.firstName || ''} ${ghlContact.lastName || ''}`.trim(),
+        name: fullName || ghlContact.name || ghlContact.email.split('@')[0],
         ghlUserId: ghlContact.id,
         ghlLocationId: companyAuth.locationId,
         ghlCompanyId: companyAuth.companyId,
       },
       update: {
         email: ghlContact.email,
-        name: `${ghlContact.firstName || ''} ${ghlContact.lastName || ''}`.trim(),
+        name: fullName || ghlContact.name || ghlContact.email.split('@')[0],
       },
     });
 
@@ -234,6 +282,8 @@ router.post('/oauth/student/login', async (req, res) => {
       { expiresIn: '7d' }
     );
 
+    console.log('✅ JWT created, sending response');
+
     res.json({
       success: true,
       token,
@@ -245,51 +295,23 @@ router.post('/oauth/student/login', async (req, res) => {
     });
   } catch (error: any) {
     console.error('❌ Student login error:', error.response?.data || error.message);
-    res.status(401).json({ 
-      error: 'Login failed. Please check your credentials.' 
+    
+    if (error.response?.status === 401 || error.response?.status === 403) {
+      return res.status(401).json({ 
+        error: 'Authentication expired. Admin needs to re-authorize the app at /admin/ghl-setup' 
+      });
+    }
+    
+    res.status(500).json({ 
+      error: 'Login failed. Please try again or contact support.' 
     });
   }
 });
 
 // ==========================================
-// HELPER FUNCTIONS
+// PROGRESS SYNC
 // ==========================================
 
-async function refreshCompanyToken(companyId: string, refreshToken: string): Promise<string> {
-  try {
-    const response = await axios.post(
-      GHL_TOKEN_URL,
-      new URLSearchParams({
-        client_id: process.env.GHL_CLIENT_ID!,
-        client_secret: process.env.GHL_CLIENT_SECRET!,
-        grant_type: 'refresh_token',
-        refresh_token: refreshToken,
-      }),
-      {
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
-      }
-    );
-
-    const { access_token, refresh_token: newRefreshToken, expires_in } = response.data;
-
-    await prisma.gHLCompanyAuth.update({
-      where: { companyId },
-      data: {
-        accessToken: access_token,
-        refreshToken: newRefreshToken,
-        tokenExpiry: new Date(Date.now() + expires_in * 1000),
-      },
-    });
-
-    console.log('✅ Company token refreshed');
-    return access_token;
-  } catch (error) {
-    console.error('Failed to refresh company token:', error);
-    throw error;
-  }
-}
-
-// Progress sync (uses company token)
 router.post('/oauth/sync-progress', async (req, res) => {
   const { userId } = req.body;
 
@@ -345,12 +367,51 @@ router.post('/oauth/sync-progress', async (req, res) => {
       }
     );
 
+    console.log('✅ Progress synced to GHL for user:', userId);
     res.json({ success: true, message: 'Progress synced to GHL' });
   } catch (error: any) {
-    console.error('Sync error:', error.response?.data || error.message);
+    console.error('❌ Sync error:', error.response?.data || error.message);
     res.status(500).json({ error: 'Failed to sync progress' });
   }
 });
+
+// ==========================================
+// HELPER FUNCTIONS
+// ==========================================
+
+async function refreshCompanyToken(companyId: string, refreshToken: string): Promise<string> {
+  try {
+    const response = await axios.post(
+      GHL_TOKEN_URL,
+      new URLSearchParams({
+        client_id: process.env.GHL_CLIENT_ID!,
+        client_secret: process.env.GHL_CLIENT_SECRET!,
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken,
+      }),
+      {
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+      }
+    );
+
+    const { access_token, refresh_token: newRefreshToken, expires_in } = response.data;
+
+    await prisma.gHLCompanyAuth.update({
+      where: { companyId },
+      data: {
+        accessToken: access_token,
+        refreshToken: newRefreshToken,
+        tokenExpiry: new Date(Date.now() + expires_in * 1000),
+      },
+    });
+
+    console.log('✅ Company token refreshed');
+    return access_token;
+  } catch (error) {
+    console.error('❌ Failed to refresh company token:', error);
+    throw error;
+  }
+}
 
 async function getProgressData(userId: string) {
   const progressRecords = await prisma.progress.findMany({
