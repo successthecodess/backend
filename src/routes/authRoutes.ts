@@ -10,6 +10,13 @@ const GHL_TOKEN_URL = 'https://services.leadconnectorhq.com/oauth/token';
 const GHL_API_BASE = 'https://services.leadconnectorhq.com';
 
 // ==========================================
+// CACHE SETUP
+// ==========================================
+
+const contactCache = new Map<string, { contact: any; timestamp: number }>();
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+// ==========================================
 // HELPER FUNCTIONS
 // ==========================================
 
@@ -43,8 +50,6 @@ async function refreshCompanyToken(companyId: string, refreshToken: string): Pro
     });
 
     console.log('✅ Token refreshed successfully');
-    console.log('   Expires in:', expires_in, 'seconds');
-    console.log('   New expiry:', expiryDate.toISOString());
     
     return access_token;
   } catch (error: any) {
@@ -57,29 +62,19 @@ async function getValidToken(companyAuth: any): Promise<string> {
   const now = new Date();
   const expiry = new Date(companyAuth.tokenExpiry);
   const hoursUntilExpiry = (expiry.getTime() - now.getTime()) / (1000 * 60 * 60);
-  
-  console.log('🔍 Checking token validity:');
-  console.log('   Current time:', now.toISOString());
-  console.log('   Token expiry:', expiry.toISOString());
-  console.log('   Hours until expiry:', hoursUntilExpiry.toFixed(2));
 
   if (hoursUntilExpiry <= 2) {
-    console.log('⏰ Token expired or expiring soon, refreshing...');
+    console.log('⏰ Token expiring soon, refreshing...');
     return await refreshCompanyToken(companyAuth.companyId, companyAuth.refreshToken);
   }
 
-  console.log('✅ Token is valid');
   return companyAuth.accessToken;
 }
 
-async function searchContactByEmail(email: string, accessToken: string, locationId: string, companyId: string): Promise<any> {
-  console.log('🔍 Starting multi-method contact search');
-  console.log('   Email:', email);
-  console.log('   Company ID:', companyId);
-  console.log('   Location ID:', locationId);
+async function searchContactByEmailSequential(email: string, accessToken: string, locationId: string, companyId: string): Promise<any> {
+  console.log('🔄 Sequential deep search (fallback)');
   
-  // METHOD 1: Try with query parameter
-  console.log('\n📍 METHOD 1: Using query parameter search...');
+  // METHOD 1: Query parameter
   try {
     const queryResponse = await axios.get(
       `${GHL_API_BASE}/contacts/`,
@@ -87,112 +82,75 @@ async function searchContactByEmail(email: string, accessToken: string, location
         params: {
           locationId: locationId,
           query: email,
+          limit: 20,
         },
         headers: {
           'Authorization': `Bearer ${accessToken}`,
           'Version': '2021-07-28'
-        }
+        },
+        timeout: 8000,
       }
     );
 
-    console.log('   Response:', {
-      contactsFound: queryResponse.data.contacts?.length || 0,
-      total: queryResponse.data.total || queryResponse.data.count || 0,
-    });
-
     if (queryResponse.data.contacts && queryResponse.data.contacts.length > 0) {
-      console.log('   Sample results:');
-      queryResponse.data.contacts.slice(0, 3).forEach((c: any, i: number) => {
-        console.log(`     ${i + 1}. ${c.email} (${c.firstName} ${c.lastName})`);
-      });
-
       const match = queryResponse.data.contacts.find((c: any) => 
         c.email?.toLowerCase() === email.toLowerCase()
       );
 
       if (match) {
-        console.log('✅ FOUND via query parameter!');
+        console.log('✅ Found via query (sequential)');
         return match;
       }
     }
   } catch (error: any) {
-    console.error('   Query search error:', error.response?.status, error.response?.data?.message);
+    console.log('⚠️ Query failed in sequential search');
   }
 
-  // METHOD 2: Try listing with skip/limit
-  console.log('\n📍 METHOD 2: Using skip/limit pagination...');
+  // METHOD 2: Pagination
   try {
-    let totalContactsSearched = 0;
-    let skip = 0;
-    const limit = 100;
-    let pageCount = 0;
-
-    while (pageCount < 50) {
+    for (let page = 0; page < 20; page++) {
       const listResponse = await axios.get(
         `${GHL_API_BASE}/contacts/`,
         {
           params: {
             locationId: locationId,
-            limit: limit,
-            skip: skip,
+            limit: 100,
+            skip: page * 100,
           },
           headers: {
             'Authorization': `Bearer ${accessToken}`,
             'Version': '2021-07-28'
-          }
+          },
+          timeout: 8000,
         }
       );
 
       const contacts = listResponse.data.contacts || [];
-      totalContactsSearched += contacts.length;
-      pageCount++;
-
-      console.log(`   Page ${pageCount}: ${contacts.length} contacts (total: ${totalContactsSearched})`);
-
-      if (pageCount === 1 && contacts.length > 0) {
-        console.log('   Sample:');
-        contacts.slice(0, 3).forEach((c: any, i: number) => {
-          console.log(`     ${i + 1}. ${c.email || 'NO EMAIL'} (${c.firstName} ${c.lastName})`);
-        });
-      }
+      
+      if (contacts.length === 0) break;
 
       const match = contacts.find((c: any) => 
         c.email?.toLowerCase() === email.toLowerCase()
       );
 
       if (match) {
-        console.log('✅ FOUND via pagination!');
-        console.log('   Total searched:', totalContactsSearched);
+        console.log(`✅ Found via pagination page ${page + 1}`);
         return match;
       }
 
-      if (contacts.length < limit) {
-        console.log('   End of contacts');
-        break;
-      }
-
-      skip += limit;
+      if (contacts.length < 100) break;
     }
   } catch (error: any) {
-    console.error('   Pagination error:', error.response?.status, error.response?.data?.message);
+    console.log('⚠️ Pagination failed in sequential search');
   }
 
-  // METHOD 3: Try startAfterId pagination
-  console.log('\n📍 METHOD 3: Using startAfterId pagination...');
+  // METHOD 3: Without location filter
   try {
-    let totalContactsSearched = 0;
     let startAfterId: string | undefined = undefined;
-    let pageCount = 0;
-
-    while (pageCount < 50) {
-      const params: any = {
-        locationId: locationId,
-        limit: 100,
-      };
-
-      if (startAfterId) {
-        params.startAfterId = startAfterId;
-      }
+    
+    for (let page = 0; page < 20; page++) {
+      const params: any = { limit: 100 };
+      if (startAfterId) params.startAfterId = startAfterId;
 
       const listResponse = await axios.get(
         `${GHL_API_BASE}/contacts/`,
@@ -201,98 +159,152 @@ async function searchContactByEmail(email: string, accessToken: string, location
           headers: {
             'Authorization': `Bearer ${accessToken}`,
             'Version': '2021-07-28'
-          }
+          },
+          timeout: 8000,
         }
       );
 
       const contacts = listResponse.data.contacts || [];
-      totalContactsSearched += contacts.length;
-      pageCount++;
-
-      console.log(`   Page ${pageCount}: ${contacts.length} contacts`);
+      if (contacts.length === 0) break;
 
       const match = contacts.find((c: any) => 
         c.email?.toLowerCase() === email.toLowerCase()
       );
 
       if (match) {
-        console.log('✅ FOUND via startAfterId!');
+        console.log(`✅ Found without location filter page ${page + 1}`);
         return match;
       }
 
-      if (contacts.length < 100) {
-        break;
-      }
-
+      if (contacts.length < 100) break;
       startAfterId = contacts[contacts.length - 1].id;
     }
   } catch (error: any) {
-    console.error('   startAfterId error:', error.response?.status, error.response?.data?.message);
+    console.log('⚠️ No-location search failed');
   }
 
-  // METHOD 4: Try without location filter
-  console.log('\n📍 METHOD 4: Without location filter...');
-  try {
-    let totalContactsSearched = 0;
-    let startAfterId: string | undefined = undefined;
-    let pageCount = 0;
-
-    while (pageCount < 50) {
-      const params: any = {
-        limit: 100,
-      };
-
-      if (startAfterId) {
-        params.startAfterId = startAfterId;
-      }
-
-      const listResponse = await axios.get(
-        `${GHL_API_BASE}/contacts/`,
-        {
-          params,
-          headers: {
-            'Authorization': `Bearer ${accessToken}`,
-            'Version': '2021-07-28'
-          }
-        }
-      );
-
-      const contacts = listResponse.data.contacts || [];
-      totalContactsSearched += contacts.length;
-      pageCount++;
-
-      console.log(`   Page ${pageCount}: ${contacts.length} contacts`);
-
-      if (pageCount === 1 && contacts.length > 0) {
-        console.log('   Sample with locations:');
-        contacts.slice(0, 3).forEach((c: any, i: number) => {
-          console.log(`     ${i + 1}. ${c.email} - Loc: ${c.locationId} (${c.firstName} ${c.lastName})`);
-        });
-      }
-
-      const match = contacts.find((c: any) => 
-        c.email?.toLowerCase() === email.toLowerCase()
-      );
-
-      if (match) {
-        console.log('✅ FOUND without location filter!');
-        console.log('   Contact location:', match.locationId);
-        console.log('   Authorized location:', locationId);
-        return match;
-      }
-
-      if (contacts.length < 100) {
-        break;
-      }
-
-      startAfterId = contacts[contacts.length - 1].id;
-    }
-  } catch (error: any) {
-    console.error('   No-filter error:', error.response?.status, error.response?.data?.message);
-  }
-
-  console.log('\n❌ CONTACT NOT FOUND after trying all methods');
+  console.log('❌ Not found in sequential search');
   return null;
+}
+
+async function searchContactByEmailParallel(email: string, accessToken: string, locationId: string, companyId: string): Promise<any> {
+  console.log('🚀 Parallel search started for:', email);
+  const startTime = Date.now();
+  
+  // Launch all methods in parallel
+  const searchPromises = [
+    // Method 1: Query search (fastest)
+    axios.get(`${GHL_API_BASE}/contacts/`, {
+      params: { locationId, query: email, limit: 20 },
+      headers: { 'Authorization': `Bearer ${accessToken}`, 'Version': '2021-07-28' },
+      timeout: 5000,
+    }).then(res => ({
+      method: 'query',
+      contacts: res.data.contacts || [],
+      success: true,
+    })).catch(() => ({ 
+      method: 'query', 
+      contacts: [], 
+      success: false 
+    })),
+
+    // Method 2: First page with location
+    axios.get(`${GHL_API_BASE}/contacts/`, {
+      params: { locationId, limit: 100, skip: 0 },
+      headers: { 'Authorization': `Bearer ${accessToken}`, 'Version': '2021-07-28' },
+      timeout: 5000,
+    }).then(res => ({
+      method: 'page1-with-loc',
+      contacts: res.data.contacts || [],
+      success: true,
+    })).catch(() => ({ 
+      method: 'page1-with-loc', 
+      contacts: [], 
+      success: false 
+    })),
+
+    // Method 3: First page without location
+    axios.get(`${GHL_API_BASE}/contacts/`, {
+      params: { limit: 100 },
+      headers: { 'Authorization': `Bearer ${accessToken}`, 'Version': '2021-07-28' },
+      timeout: 5000,
+    }).then(res => ({
+      method: 'page1-no-loc',
+      contacts: res.data.contacts || [],
+      success: true,
+    })).catch(() => ({ 
+      method: 'page1-no-loc', 
+      contacts: [], 
+      success: false 
+    })),
+
+    // Method 4: Second page with location (parallel)
+    axios.get(`${GHL_API_BASE}/contacts/`, {
+      params: { locationId, limit: 100, skip: 100 },
+      headers: { 'Authorization': `Bearer ${accessToken}`, 'Version': '2021-07-28' },
+      timeout: 5000,
+    }).then(res => ({
+      method: 'page2-with-loc',
+      contacts: res.data.contacts || [],
+      success: true,
+    })).catch(() => ({ 
+      method: 'page2-with-loc', 
+      contacts: [], 
+      success: false 
+    })),
+  ];
+
+  // Wait for all parallel requests to complete
+  const results = await Promise.all(searchPromises);
+  
+  // Check all results for a match
+  for (const result of results) {
+    if (result.success && result.contacts.length > 0) {
+      const match = result.contacts.find((c: any) => 
+        c.email?.toLowerCase() === email.toLowerCase()
+      );
+      
+      if (match) {
+        const duration = Date.now() - startTime;
+        console.log(`✅ FOUND via ${result.method} in ${duration}ms (parallel)`);
+        return match;
+      }
+    }
+  }
+
+  const parallelDuration = Date.now() - startTime;
+  console.log(`⚠️ Not found in parallel search (${parallelDuration}ms), trying deep search...`);
+  
+  // If not found in first pages, try sequential deep search
+  return await searchContactByEmailSequential(email, accessToken, locationId, companyId);
+}
+
+async function searchContactByEmailCached(email: string, accessToken: string, locationId: string, companyId: string): Promise<any> {
+  const cacheKey = `${email.toLowerCase()}-${locationId}`;
+  
+  // Check cache first
+  const cached = contactCache.get(cacheKey);
+  if (cached && (Date.now() - cached.timestamp) < CACHE_TTL) {
+    console.log('⚡ FOUND in cache (instant)');
+    return cached.contact;
+  }
+
+  // Search using parallel method
+  const contact = await searchContactByEmailParallel(email, accessToken, locationId, companyId);
+
+  // Cache the result if found
+  if (contact) {
+    contactCache.set(cacheKey, { contact, timestamp: Date.now() });
+    
+    // Clean up old cache entries (keep cache size reasonable)
+    if (contactCache.size > 1000) {
+      const entries = Array.from(contactCache.entries());
+      entries.sort((a, b) => a[1].timestamp - b[1].timestamp);
+      entries.slice(0, 500).forEach(([key]) => contactCache.delete(key));
+    }
+  }
+
+  return contact;
 }
 
 async function getProgressData(userId: string) {
@@ -362,95 +374,27 @@ router.get('/oauth/debug/test-contact-fetch', async (req, res) => {
 
     const accessToken = await getValidToken(companyAuth);
 
-    console.log('🧪 Testing contact fetch methods...');
-
     const results: any = {
       locationId: companyAuth.locationId,
       companyId: companyAuth.companyId,
       tests: {}
     };
 
-    // Test 1: With location
-    try {
-      const test1 = await axios.get(
-        `${GHL_API_BASE}/contacts/`,
-        {
-          params: {
-            locationId: companyAuth.locationId,
-            limit: 10,
-          },
-          headers: {
-            'Authorization': `Bearer ${accessToken}`,
-            'Version': '2021-07-28'
-          }
-        }
-      );
-      results.tests.withLocation = {
-        success: true,
-        contactCount: test1.data.contacts?.length || 0,
-        total: test1.data.total || test1.data.count || 0,
-        sampleEmails: test1.data.contacts?.slice(0, 3).map((c: any) => c.email) || [],
-      };
-    } catch (e: any) {
-      results.tests.withLocation = {
-        success: false,
-        error: e.response?.data,
-      };
-    }
+    // Test parallel search
+    const startTime = Date.now();
+    const testContact = await searchContactByEmailParallel(
+      'test@example.com',
+      accessToken,
+      companyAuth.locationId!,
+      companyAuth.companyId
+    );
+    const duration = Date.now() - startTime;
 
-    // Test 2: Without location
-    try {
-      const test2 = await axios.get(
-        `${GHL_API_BASE}/contacts/`,
-        {
-          params: {
-            limit: 10,
-          },
-          headers: {
-            'Authorization': `Bearer ${accessToken}`,
-            'Version': '2021-07-28'
-          }
-        }
-      );
-      results.tests.noLocation = {
-        success: true,
-        contactCount: test2.data.contacts?.length || 0,
-        total: test2.data.total || test2.data.count || 0,
-        sampleEmails: test2.data.contacts?.slice(0, 3).map((c: any) => ({ email: c.email, locationId: c.locationId })) || [],
-      };
-    } catch (e: any) {
-      results.tests.noLocation = {
-        success: false,
-        error: e.response?.data,
-      };
-    }
-
-    // Test 3: With query
-    try {
-      const test3 = await axios.get(
-        `${GHL_API_BASE}/contacts/`,
-        {
-          params: {
-            locationId: companyAuth.locationId,
-            query: 'dfinley',
-          },
-          headers: {
-            'Authorization': `Bearer ${accessToken}`,
-            'Version': '2021-07-28'
-          }
-        }
-      );
-      results.tests.withQuery = {
-        success: true,
-        contactCount: test3.data.contacts?.length || 0,
-        sampleResults: test3.data.contacts?.slice(0, 3).map((c: any) => ({ email: c.email, name: `${c.firstName} ${c.lastName}` })) || [],
-      };
-    } catch (e: any) {
-      results.tests.withQuery = {
-        success: false,
-        error: e.response?.data,
-      };
-    }
+    results.parallelSearchTest = {
+      duration: `${duration}ms`,
+      found: !!testContact,
+      contact: testContact ? { email: testContact.email, name: `${testContact.firstName} ${testContact.lastName}` } : null,
+    };
 
     res.json(results);
   } catch (error: any) {
@@ -490,12 +434,11 @@ router.get('/oauth/debug/token-status', async (req, res) => {
       isExpired: now >= expiry,
       hoursUntilExpiry: hoursUntilExpiry.toFixed(2),
       hasRefreshToken: !!companyAuth.refreshToken,
-      accessTokenPreview: companyAuth.accessToken?.substring(0, 20) + '...',
+      cacheSize: contactCache.size,
     });
   } catch (error: any) {
     res.status(500).json({ 
       error: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 });
@@ -510,7 +453,6 @@ router.post('/oauth/debug/force-refresh', async (req, res) => {
       return res.status(404).json({ error: 'No authorization found' });
     }
 
-    console.log('🔄 Manual refresh initiated...');
     const newToken = await refreshCompanyToken(
       companyAuth.companyId, 
       companyAuth.refreshToken
@@ -525,15 +467,22 @@ router.post('/oauth/debug/force-refresh', async (req, res) => {
       message: 'Token refreshed successfully',
       oldExpiry: companyAuth.tokenExpiry,
       newExpiry: updated?.tokenExpiry,
-      accessTokenPreview: newToken.substring(0, 20) + '...'
     });
   } catch (error: any) {
-    console.error('Manual refresh failed:', error);
-    res.json({ 
+    res.status(500).json({ 
       error: error.message,
-      details: error.response?.data
     });
   }
+});
+
+router.post('/oauth/debug/clear-cache', async (req, res) => {
+  const sizeBefore = contactCache.size;
+  contactCache.clear();
+  res.json({
+    success: true,
+    message: 'Cache cleared',
+    entriesCleared: sizeBefore,
+  });
 });
 
 // ==========================================
@@ -541,8 +490,6 @@ router.post('/oauth/debug/force-refresh', async (req, res) => {
 // ==========================================
 
 router.get('/oauth/admin/authorize', (req, res) => {
-  console.log('🔐 Admin authorization flow started');
-  
   const params = new URLSearchParams({
     response_type: 'code',
     redirect_uri: `${process.env.BACKEND_URL}/api/auth/oauth/admin/callback`,
@@ -558,7 +505,6 @@ router.get('/oauth/admin/callback', async (req, res) => {
   const { code, error } = req.query;
 
   if (error || !code) {
-    console.error('❌ Authorization failed:', error);
     return res.redirect(`${process.env.FRONTEND_URL}/admin/ghl-setup?error=authorization_failed`);
   }
 
@@ -581,11 +527,6 @@ router.get('/oauth/admin/callback', async (req, res) => {
     );
 
     const { access_token, refresh_token, expires_in, locationId, companyId, userId } = tokenResponse.data;
-
-    console.log('✅ Tokens received');
-    console.log('   Company ID:', companyId);
-    console.log('   Location ID:', locationId);
-
     const expiryDate = new Date(Date.now() + (expires_in - 300) * 1000);
 
     const userResponse = await axios.get(
@@ -615,11 +556,11 @@ router.get('/oauth/admin/callback', async (req, res) => {
       },
     });
 
-    console.log('✅ Authorization saved');
+    // Clear cache when admin re-authorizes
+    contactCache.clear();
 
     res.redirect(`${process.env.FRONTEND_URL}/admin/ghl-setup?success=true&companyId=${companyId}`);
   } catch (error: any) {
-    console.error('❌ Admin callback error:', error.response?.data || error.message);
     res.redirect(`${process.env.FRONTEND_URL}/admin/ghl-setup?error=setup_failed`);
   }
 });
@@ -654,11 +595,9 @@ router.get('/oauth/admin/status', async (req, res) => {
       hoursUntilExpiry: hoursUntilExpiry.toFixed(2),
     });
   } catch (error: any) {
-    console.error('Failed to check status:', error);
     res.status(500).json({ error: 'Failed to check authorization status' });
   }
 });
-
 
 // ==========================================
 // STUDENT LOGIN
@@ -674,41 +613,34 @@ router.post('/oauth/student/login', async (req, res) => {
   try {
     console.log('👤 ========== LOGIN ATTEMPT ==========');
     console.log('   Email:', email);
-    console.log('   Timestamp:', new Date().toISOString());
 
     const companyAuth = await prisma.gHLCompanyAuth.findFirst({
       orderBy: { authorizedAt: 'desc' }
     });
 
     if (!companyAuth) {
-      console.log('❌ No company authorization found');
       return res.status(400).json({ 
         error: 'Company not authorized. Admin must set up GHL integration first at /admin/ghl-setup' 
       });
     }
 
-    console.log('✅ Found company auth');
-    console.log('   Company ID:', companyAuth.companyId);
-    console.log('   Location ID:', companyAuth.locationId);
-
     let accessToken: string;
     try {
       accessToken = await getValidToken(companyAuth);
     } catch (refreshError: any) {
-      console.error('❌ Token refresh failed:', refreshError.message);
       return res.status(401).json({ 
         error: 'Session expired. Admin needs to re-authorize at /admin/ghl-setup'
       });
     }
 
-    // Search for contact using Business ID endpoint
+    // Search for contact using cached parallel search
     let ghlContact: any = null;
     let retryCount = 0;
     const maxRetries = 2;
 
     while (!ghlContact && retryCount <= maxRetries) {
       try {
-        ghlContact = await searchContactByEmail(
+        ghlContact = await searchContactByEmailCached(
           email, 
           accessToken, 
           companyAuth.locationId!, 
@@ -742,22 +674,38 @@ router.post('/oauth/student/login', async (req, res) => {
 
     const fullName = `${ghlContact.firstName || ''} ${ghlContact.lastName || ''}`.trim();
     
-    const user = await prisma.user.upsert({
-      where: { ghlUserId: ghlContact.id },
-      create: {
-        email: ghlContact.email,
-        name: fullName || ghlContact.name || ghlContact.email.split('@')[0],
-        ghlUserId: ghlContact.id,
-        ghlLocationId: companyAuth.locationId,
-        ghlCompanyId: companyAuth.companyId,
-      },
-      update: {
-        email: ghlContact.email,
-        name: fullName || ghlContact.name || ghlContact.email.split('@')[0],
-      },
+    // Check if user already exists by email or ghlUserId
+    let user = await prisma.user.findFirst({
+      where: {
+        OR: [
+          { email: ghlContact.email },
+          { ghlUserId: ghlContact.id }
+        ]
+      }
     });
 
-    console.log('✅ User record:', user.id);
+    if (user) {
+      user = await prisma.user.update({
+        where: { id: user.id },
+        data: {
+          email: ghlContact.email,
+          name: fullName || ghlContact.name || ghlContact.email.split('@')[0],
+          ghlUserId: ghlContact.id,
+          ghlLocationId: companyAuth.locationId,
+          ghlCompanyId: companyAuth.companyId,
+        },
+      });
+    } else {
+      user = await prisma.user.create({
+        data: {
+          email: ghlContact.email,
+          name: fullName || ghlContact.name || ghlContact.email.split('@')[0],
+          ghlUserId: ghlContact.id,
+          ghlLocationId: companyAuth.locationId,
+          ghlCompanyId: companyAuth.companyId,
+        },
+      });
+    }
 
     const token = jwt.sign(
       {
@@ -784,7 +732,7 @@ router.post('/oauth/student/login', async (req, res) => {
     });
   } catch (error: any) {
     console.error('❌ LOGIN FAILED');
-    console.error('   Error:', error.response?.data || error.message);
+    console.error('   Error:', error.message);
     console.error('========================================\n');
     res.status(500).json({ 
       error: 'Login failed. Please try again.'
@@ -808,44 +756,34 @@ router.post('/oauth/student/signup', async (req, res) => {
   try {
     console.log('📝 ========== SIGNUP ATTEMPT ==========');
     console.log('   Email:', email);
-    console.log('   Name:', firstName, lastName);
-    console.log('   Phone:', phone || 'N/A');
-    console.log('   Timestamp:', new Date().toISOString());
 
     const companyAuth = await prisma.gHLCompanyAuth.findFirst({
       orderBy: { authorizedAt: 'desc' }
     });
 
     if (!companyAuth) {
-      console.log('❌ No company authorization found');
       return res.status(400).json({ 
         error: 'System not configured. Please contact administrator.' 
       });
     }
 
-    console.log('✅ Found company auth');
-    console.log('   Company ID:', companyAuth.companyId);
-    console.log('   Location ID:', companyAuth.locationId);
-
     let accessToken: string;
     try {
       accessToken = await getValidToken(companyAuth);
     } catch (refreshError: any) {
-      console.error('❌ Token refresh failed:', refreshError.message);
       return res.status(401).json({ 
         error: 'System configuration error. Please contact administrator.' 
       });
     }
 
-    // Check if contact already exists using Business ID endpoint
-    console.log('🔍 Checking if contact exists...');
+    // Check if contact already exists
     let existingContact: any = null;
     let retryCount = 0;
     const maxRetries = 2;
 
     while (existingContact === null && retryCount <= maxRetries) {
       try {
-        existingContact = await searchContactByEmail(
+        existingContact = await searchContactByEmailCached(
           email, 
           accessToken, 
           companyAuth.locationId!, 
@@ -877,11 +815,7 @@ router.post('/oauth/student/signup', async (req, res) => {
       });
     }
 
-    console.log('✅ Email not found, proceeding with signup');
-
     // Create new contact in GHL
-    console.log('➕ Creating new contact in GHL...');
-    
     const contactData: any = {
       firstName,
       lastName,
@@ -916,21 +850,34 @@ router.post('/oauth/student/signup', async (req, res) => {
     );
 
     const ghlContact = createResponse.data.contact;
-    console.log('✅ Contact created in GHL:', ghlContact.id);
 
     const fullName = `${firstName} ${lastName}`.trim();
     
-    const user = await prisma.user.create({
-      data: {
-        email,
-        name: fullName,
-        ghlUserId: ghlContact.id,
-        ghlLocationId: companyAuth.locationId,
-        ghlCompanyId: companyAuth.companyId,
-      },
+    let user = await prisma.user.findUnique({
+      where: { email }
     });
 
-    console.log('✅ User created in database:', user.id);
+    if (user) {
+      user = await prisma.user.update({
+        where: { id: user.id },
+        data: {
+          name: fullName,
+          ghlUserId: ghlContact.id,
+          ghlLocationId: companyAuth.locationId,
+          ghlCompanyId: companyAuth.companyId,
+        },
+      });
+    } else {
+      user = await prisma.user.create({
+        data: {
+          email,
+          name: fullName,
+          ghlUserId: ghlContact.id,
+          ghlLocationId: companyAuth.locationId,
+          ghlCompanyId: companyAuth.companyId,
+        },
+      });
+    }
 
     const token = jwt.sign(
       {
@@ -957,7 +904,7 @@ router.post('/oauth/student/signup', async (req, res) => {
     });
   } catch (error: any) {
     console.error('❌ SIGNUP FAILED');
-    console.error('   Error:', error.response?.data || error.message);
+    console.error('   Error:', error.message);
     console.error('========================================\n');
     
     if (error.response?.data) {
@@ -1008,7 +955,6 @@ router.post('/oauth/sync-progress', async (req, res) => {
     try {
       accessToken = await getValidToken(companyAuth);
     } catch {
-      console.error('Token refresh failed during sync');
       return res.json({ 
         success: false, 
         message: 'Sync failed, will retry later' 
@@ -1037,10 +983,8 @@ router.post('/oauth/sync-progress', async (req, res) => {
       }
     );
 
-    console.log('✅ Progress synced for user:', userId);
     res.json({ success: true, message: 'Progress synced successfully' });
   } catch (error: any) {
-    console.error('❌ Sync error:', error.response?.data || error.message);
     res.json({ 
       success: false, 
       message: 'Sync failed, will retry later' 
