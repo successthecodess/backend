@@ -4,6 +4,113 @@ const prisma = new PrismaClient();
 
 async function main() {
   console.log('🌱 Starting seed...');
+// ... existing seed code ...
+
+  console.log('✅ Created practice exam template');
+
+  // ADD THIS SECTION - Create feature flags
+  const featureFlags = [
+    {
+      name: 'question_bank',
+      displayName: 'Question Bank Access',
+      description: 'Access to the full AP CS A question bank',
+      requiredGhlTag: 'apcs-access',
+      requiresPremium: false,
+      requiresStaff: false,
+      isEnabled: true,
+    },
+    {
+      name: 'timed_practice',
+      displayName: 'Timed Practice Mode',
+      description: 'Access to timed practice sessions',
+      requiredGhlTag: 'apcs-timed',
+      requiresPremium: false,
+      requiresStaff: false,
+      isEnabled: true,
+    },
+    {
+      name: 'analytics_dashboard',
+      displayName: 'Analytics Dashboard',
+      description: 'Access to detailed performance analytics',
+      requiredGhlTag: 'apcs-analytics',
+      requiresPremium: true,
+      requiresStaff: false,
+      isEnabled: true,
+    },
+    {
+      name: 'exam_mode',
+      displayName: 'Mock Exam Access',
+      description: 'Access to full-length mock AP exams',
+      requiredGhlTag: 'apcs-exam',
+      requiresPremium: false,
+      requiresStaff: false,
+      isEnabled: true,
+    },
+  ];
+
+  for (const flag of featureFlags) {
+    await prisma.featureFlag.upsert({
+      where: { name: flag.name },
+      update: flag,
+      create: flag,
+    });
+  }
+
+  console.log('✅ Created feature flags');
+
+  // Create course access configs
+  const courses = [
+    {
+      courseName: 'AP Computer Science A',
+      courseSlug: 'apcs-a',
+      requiredGhlTag: 'course-apcs-a',
+      fallbackToFlag: 'hasAccessToQuestionBank',
+      isActive: true,
+    },
+    {
+      courseName: 'AP Computer Science Principles',
+      courseSlug: 'apcs-principles',
+      requiredGhlTag: 'course-apcs-principles',
+      fallbackToFlag: null,
+      isActive: false, // Not yet active
+    },
+  ];
+
+  for (const course of courses) {
+    await prisma.courseAccess.upsert({
+      where: { courseSlug: course.courseSlug },
+      update: course,
+      create: course,
+    });
+  }
+
+  console.log('✅ Created course access configs');
+// ... existing seed code ...
+
+  console.log('✅ Created course access configs');
+
+  // ADD THIS SECTION - Seed initial admin emails
+  const adminEmails = [
+    'successthecodess@gmail.com',
+    'successx2020@gmail.com',
+    'dfinley96@gmail.com',
+  ];
+
+  for (const email of adminEmails) {
+    await prisma.adminEmail.upsert({
+      where: { email: email.toLowerCase() },
+      update: {},
+      create: {
+        email: email.toLowerCase(),
+        addedBy: 'system',
+        isActive: true,
+      },
+    });
+  }
+
+  console.log('✅ Created admin emails');
+
+  console.log('\n🎉 Seed completed successfully!');
 
   // Create AP CS A Units with Topics
   const unitsData = [

@@ -57,6 +57,39 @@ async function refreshCompanyToken(companyId: string, refreshToken: string): Pro
     throw error;
   }
 }
+async function checkAndGrantAdminAccess(email: string, userId: string): Promise<boolean> {
+  try {
+    // Check if email is in admin list
+    const adminEmail = await prisma.adminEmail.findUnique({
+      where: { 
+        email: email.toLowerCase(),
+      },
+    });
+
+    if (adminEmail && adminEmail.isActive) {
+      // Grant admin access
+      await prisma.user.update({
+        where: { id: userId },
+        data: {
+          isAdmin: true,
+          isStaff: true,
+          role: 'ADMIN',
+          hasAccessToQuestionBank: true,
+          hasAccessToTimedPractice: true,
+          hasAccessToAnalytics: true,
+        },
+      });
+      
+      console.log('✅ Admin access granted to:', email);
+      return true;
+    }
+    
+    return false;
+  } catch (error) {
+    console.error('Failed to check admin access:', error);
+    return false;
+  }
+}
 
 async function getValidToken(companyAuth: any): Promise<string> {
   const now = new Date();
@@ -673,6 +706,7 @@ router.post('/oauth/student/login', async (req, res) => {
     }
 
     const fullName = `${ghlContact.firstName || ''} ${ghlContact.lastName || ''}`.trim();
+    const tags = ghlContact.tags || [];
     
     // Check if user already exists by email or ghlUserId
     let user = await prisma.user.findFirst({
@@ -693,6 +727,7 @@ router.post('/oauth/student/login', async (req, res) => {
           ghlUserId: ghlContact.id,
           ghlLocationId: companyAuth.locationId,
           ghlCompanyId: companyAuth.companyId,
+          ghlTags: tags,
         },
       });
     } else {
@@ -703,9 +738,16 @@ router.post('/oauth/student/login', async (req, res) => {
           ghlUserId: ghlContact.id,
           ghlLocationId: companyAuth.locationId,
           ghlCompanyId: companyAuth.companyId,
+           ghlTags: tags,
         },
       });
     }
+    await checkAndGrantAdminAccess(user.email, user.id);
+
+// Refresh user data to get updated admin status
+user = await prisma.user.findUnique({
+  where: { id: user.id }
+}) || user;
 
     const token = jwt.sign(
       {
@@ -850,6 +892,7 @@ router.post('/oauth/student/signup', async (req, res) => {
     );
 
     const ghlContact = createResponse.data.contact;
+    const tags = ghlContact.tags || [];
 
     const fullName = `${firstName} ${lastName}`.trim();
     
@@ -865,6 +908,7 @@ router.post('/oauth/student/signup', async (req, res) => {
           ghlUserId: ghlContact.id,
           ghlLocationId: companyAuth.locationId,
           ghlCompanyId: companyAuth.companyId,
+          ghlTags: tags,
         },
       });
     } else {
@@ -875,10 +919,16 @@ router.post('/oauth/student/signup', async (req, res) => {
           ghlUserId: ghlContact.id,
           ghlLocationId: companyAuth.locationId,
           ghlCompanyId: companyAuth.companyId,
+          ghlTags: tags,
         },
       });
     }
+await checkAndGrantAdminAccess(user.email, user.id);
 
+// Refresh user data to get updated admin status
+user = await prisma.user.findUnique({
+  where: { id: user.id }
+}) || user;
     const token = jwt.sign(
       {
         userId: user.id,

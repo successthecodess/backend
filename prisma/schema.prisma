@@ -6,7 +6,16 @@ datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
 }
-
+model AdminEmail {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  addedBy   String   // Email of admin who added this
+  addedAt   DateTime @default(now())
+  isActive  Boolean  @default(true)
+  
+  @@index([email])
+  @@map("admin_emails")
+}
 model User {
   id                String             @id @default(cuid())
   email             String             @unique
@@ -18,12 +27,18 @@ model User {
   ghlTokenExpiry    DateTime?
   ghlLocationId     String?
   ghlCompanyId      String?
+  ghlTags           String[]           @default([])
   createdAt         DateTime           @default(now())
   updatedAt         DateTime           @updatedAt
   isPremium         Boolean            @default(false)
   lastActive        DateTime           @default(now())
   premiumUntil      DateTime?
   role              UserRole           @default(STUDENT)
+  isAdmin           Boolean            @default(false) 
+  isStaff           Boolean            @default(false)
+  hasAccessToQuestionBank Boolean       @default(false)
+  hasAccessToTimedPractice Boolean      @default(false)
+  hasAccessToAnalytics     Boolean      @default(false)
   examAttempts      ExamAttempt[]
   progress          Progress[]
   questionResponses QuestionResponse[]
@@ -404,6 +419,8 @@ enum UserRole {
   STUDENT
   TEACHER
   ADMIN
+  INSTRUCTOR 
+  SUPER_ADMIN 
 }
 
 enum QuestionType {
@@ -460,3 +477,42 @@ enum ReviewStatus {
   REJECTED
   NEEDS_REVISION
 }
+model FeatureFlag {
+  id              String   @id @default(cuid())
+  name            String   @unique // e.g., "question_bank", "timed_practice"
+  displayName     String   // e.g., "Question Bank Access"
+  description     String?
+  
+  // GHL Tag requirement
+  requiredGhlTag  String?  // e.g., "apcs-access", "premium-apcs"
+  
+  // Database flag requirement
+  requiresPremium Boolean  @default(false)
+  requiresStaff   Boolean  @default(false)
+  
+  isEnabled       Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  @@index([name])
+  @@map("feature_flags")
+}
+
+model CourseAccess {
+  id              String   @id @default(cuid())
+  courseName      String   // e.g., "AP CS A", "AP CS Principles"
+  courseSlug      String   @unique // e.g., "apcs-a", "apcs-principles"
+  
+  // Access Control
+  requiredGhlTag  String   // e.g., "course-apcs-a", "course-apcs-principles"
+  fallbackToFlag  String?  // Optional: check user.hasAccessToQuestionBank if tag not present
+  
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  @@index([courseSlug])
+  @@index([requiredGhlTag])
+  @@map("course_access")
+}
+

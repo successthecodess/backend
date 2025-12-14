@@ -6,7 +6,7 @@ import questionRoutes from './routes/questionRoutes.js';
 import authRoutes from './routes/authRoutes.js';
 import practiceRoutes from './routes/practiceRoutes.js';
 import progressRoutes from './routes/progressRoutes.js'; 
- 
+
 import insightsRoutes from './routes/insightsRoutes.js';
 import adminRoutes from './routes/adminRoutes.js';
 import analyticsRoutes from './routes/analyticsRoutes.js';

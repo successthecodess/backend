@@ -1,15 +1,10 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 
-export interface AuthRequest extends Request {
-  user?: {
-    userId: string;
-    email: string;
-    ghlUserId: string;
-  };
-}
+// Use the global Express.Request extension from rbac.ts
+// No need to redefine the interface here
 
-export const authenticate = (req: AuthRequest, res: Response, next: NextFunction) => {
+export const authenticateToken = (req: Request, res: Response, next: NextFunction) => {
   try {
     const authHeader = req.headers.authorization;
     
@@ -22,17 +17,25 @@ export const authenticate = (req: AuthRequest, res: Response, next: NextFunction
     const decoded = jwt.verify(token, process.env.JWT_SECRET!) as {
       userId: string;
       email: string;
-      ghlUserId: string;
+      name: string;
+      ghlUserId?: string;
     };
 
-    req.user = decoded;
+    // Set user on request
+    req.user = {
+      userId: decoded.userId,
+      email: decoded.email,
+      name: decoded.name,
+      ghlUserId: decoded.ghlUserId,
+    };
+
     next();
   } catch (error) {
-    return res.status(401).json({ error: 'Invalid token' });
+    return res.status(401).json({ error: 'Invalid or expired token' });
   }
 };
 
-export const optionalAuth = (req: AuthRequest, res: Response, next: NextFunction) => {
+export const optionalAuth = (req: Request, res: Response, next: NextFunction) => {
   try {
     const authHeader = req.headers.authorization;
     
@@ -41,9 +44,16 @@ export const optionalAuth = (req: AuthRequest, res: Response, next: NextFunction
       const decoded = jwt.verify(token, process.env.JWT_SECRET!) as {
         userId: string;
         email: string;
-        ghlUserId: string;
+        name: string;
+        ghlUserId?: string;
       };
-      req.user = decoded;
+      
+      req.user = {
+        userId: decoded.userId,
+        email: decoded.email,
+        name: decoded.name,
+        ghlUserId: decoded.ghlUserId,
+      };
     }
     
     next();
@@ -52,3 +62,6 @@ export const optionalAuth = (req: AuthRequest, res: Response, next: NextFunction
     next();
   }
 };
+
+// Alias for backward compatibility
+export const authenticate = authenticateToken;
