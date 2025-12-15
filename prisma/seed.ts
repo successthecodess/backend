@@ -9,52 +9,54 @@ async function main() {
   console.log('✅ Created practice exam template');
 
   // ADD THIS SECTION - Create feature flags
-  const featureFlags = [
+  const features = [
     {
       name: 'question_bank',
       displayName: 'Question Bank Access',
-      description: 'Access to the full AP CS A question bank',
+      description: 'Access to the full question bank for practice',
       requiredGhlTag: 'apcs-access',
       requiresPremium: false,
       requiresStaff: false,
       isEnabled: true,
     },
+   
     {
-      name: 'timed_practice',
-      displayName: 'Timed Practice Mode',
-      description: 'Access to timed practice sessions',
-      requiredGhlTag: 'apcs-timed',
+      name: 'practice_test',
+      displayName: 'Practice Test Access',
+      description: 'Take full-length practice tests',
+      requiredGhlTag: 'apcs-test-access',
       requiresPremium: false,
+      requiresStaff: false,
+      isEnabled: true,
+    },
+    {
+      name: 'exam_mode',
+      displayName: 'Official Exam Mode',
+      description: 'Full exam experience with detailed performance report and AP score prediction',
+      requiredGhlTag: 'apcs-exam',
+      requiresPremium: true, // Premium required for detailed analytics
       requiresStaff: false,
       isEnabled: true,
     },
     {
       name: 'analytics_dashboard',
       displayName: 'Analytics Dashboard',
-      description: 'Access to detailed performance analytics',
+      description: 'View detailed performance analytics and progress tracking',
       requiredGhlTag: 'apcs-analytics',
-      requiresPremium: true,
-      requiresStaff: false,
-      isEnabled: true,
-    },
-    {
-      name: 'exam_mode',
-      displayName: 'Mock Exam Access',
-      description: 'Access to full-length mock AP exams',
-      requiredGhlTag: 'apcs-exam',
       requiresPremium: false,
       requiresStaff: false,
       isEnabled: true,
     },
   ];
 
-  for (const flag of featureFlags) {
+  for (const feature of features) {
     await prisma.featureFlag.upsert({
-      where: { name: flag.name },
-      update: flag,
-      create: flag,
+      where: { name: feature.name },
+      update: feature,
+      create: feature,
     });
   }
+  
 
   console.log('✅ Created feature flags');
 

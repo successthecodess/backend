@@ -57,39 +57,6 @@ async function refreshCompanyToken(companyId: string, refreshToken: string): Pro
     throw error;
   }
 }
-async function checkAndGrantAdminAccess(email: string, userId: string): Promise<boolean> {
-  try {
-    // Check if email is in admin list
-    const adminEmail = await prisma.adminEmail.findUnique({
-      where: { 
-        email: email.toLowerCase(),
-      },
-    });
-
-    if (adminEmail && adminEmail.isActive) {
-      // Grant admin access
-      await prisma.user.update({
-        where: { id: userId },
-        data: {
-          isAdmin: true,
-          isStaff: true,
-          role: 'ADMIN',
-          hasAccessToQuestionBank: true,
-          hasAccessToTimedPractice: true,
-          hasAccessToAnalytics: true,
-        },
-      });
-      
-      console.log('✅ Admin access granted to:', email);
-      return true;
-    }
-    
-    return false;
-  } catch (error) {
-    console.error('Failed to check admin access:', error);
-    return false;
-  }
-}
 
 async function getValidToken(companyAuth: any): Promise<string> {
   const now = new Date();
@@ -391,6 +358,40 @@ async function getProgressData(userId: string) {
   };
 }
 
+async function checkAndGrantAdminAccess(email: string, userId: string): Promise<boolean> {
+  try {
+    // Check if email is in admin list
+    const adminEmail = await prisma.adminEmail.findUnique({
+      where: { 
+        email: email.toLowerCase(),
+      },
+    });
+
+    if (adminEmail && adminEmail.isActive) {
+      // Grant admin access
+      await prisma.user.update({
+        where: { id: userId },
+        data: {
+          isAdmin: true,
+          isStaff: true,
+          role: 'ADMIN',
+          hasAccessToQuestionBank: true,
+          hasAccessToTimedPractice: true,
+          hasAccessToAnalytics: true,
+        },
+      });
+      
+      console.log('✅ Admin access granted to:', email);
+      return true;
+    }
+    
+    return false;
+  } catch (error) {
+    console.error('Failed to check admin access:', error);
+    return false;
+  }
+}
+
 // ==========================================
 // DEBUG ENDPOINTS
 // ==========================================
@@ -633,6 +634,148 @@ router.get('/oauth/admin/status', async (req, res) => {
 });
 
 // ==========================================
+// PUBLIC ENDPOINTS (For authenticated users)
+// ==========================================
+
+// Get current user info
+router.get('/oauth/me', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'No token provided' });
+    }
+
+    const token = authHeader.substring(7);
+    
+    const decoded = jwt.verify(token, process.env.JWT_SECRET!) as {
+      userId: string;
+      email: string;
+      name: string;
+      ghlUserId?: string;
+    };
+
+    const user = await prisma.user.findUnique({
+      where: { id: decoded.userId },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        role: true,
+        isAdmin: true,
+        isStaff: true,
+        ghlTags: true,
+        ghlUserId: true,
+        ghlLocationId: true,
+        ghlCompanyId: true,
+        hasAccessToQuestionBank: true,
+        hasAccessToTimedPractice: true,
+        hasAccessToAnalytics: true,
+        isPremium: true,
+        premiumUntil: true,
+        createdAt: true,
+        lastActive: true,
+      },
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { lastActive: new Date() }
+    });
+
+    res.json(user);
+  } catch (error: any) {
+    console.error('Failed to fetch user info:', error);
+    
+    if (error.name === 'JsonWebTokenError') {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+    
+    res.status(500).json({ error: 'Failed to fetch user info' });
+  }
+});
+
+// Get feature flags (public for checking access)
+router.get('/oauth/features', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'No token provided' });
+    }
+
+    const token = authHeader.substring(7);
+    
+    try {
+      jwt.verify(token, process.env.JWT_SECRET!);
+    } catch (error) {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+
+    const features = await prisma.featureFlag.findMany({
+      where: { isEnabled: true },
+      select: {
+        id: true,
+        name: true,
+        displayName: true,
+        description: true,
+        requiredGhlTag: true,
+        requiresPremium: true,
+        requiresStaff: true,
+        isEnabled: true,
+      },
+      orderBy: { displayName: 'asc' }
+    });
+
+    res.json(features);
+  } catch (error: any) {
+    console.error('Failed to fetch features:', error);
+    res.status(500).json({ error: 'Failed to fetch features' });
+  }
+});
+
+// Get courses (public for checking access)
+router.get('/oauth/courses', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'No token provided' });
+    }
+
+    const token = authHeader.substring(7);
+    
+    try {
+      jwt.verify(token, process.env.JWT_SECRET!);
+    } catch (error) {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+
+    const courses = await prisma.courseAccess.findMany({
+      where: { isActive: true },
+      select: {
+        id: true,
+        courseName: true,
+        courseSlug: true,
+        requiredGhlTag: true,
+        fallbackToFlag: true,
+        isActive: true,
+      },
+      orderBy: { courseName: 'asc' }
+    });
+
+    res.json(courses);
+  } catch (error: any) {
+    console.error('Failed to fetch courses:', error);
+    res.status(500).json({ error: 'Failed to fetch courses' });
+  }
+});
+
+// ==========================================
 // STUDENT LOGIN
 // ==========================================
 
@@ -666,7 +809,6 @@ router.post('/oauth/student/login', async (req, res) => {
       });
     }
 
-    // Search for contact using cached parallel search
     let ghlContact: any = null;
     let retryCount = 0;
     const maxRetries = 2;
@@ -708,7 +850,6 @@ router.post('/oauth/student/login', async (req, res) => {
     const fullName = `${ghlContact.firstName || ''} ${ghlContact.lastName || ''}`.trim();
     const tags = ghlContact.tags || [];
     
-    // Check if user already exists by email or ghlUserId
     let user = await prisma.user.findFirst({
       where: {
         OR: [
@@ -738,16 +879,16 @@ router.post('/oauth/student/login', async (req, res) => {
           ghlUserId: ghlContact.id,
           ghlLocationId: companyAuth.locationId,
           ghlCompanyId: companyAuth.companyId,
-           ghlTags: tags,
+          ghlTags: tags,
         },
       });
     }
+
     await checkAndGrantAdminAccess(user.email, user.id);
 
-// Refresh user data to get updated admin status
-user = await prisma.user.findUnique({
-  where: { id: user.id }
-}) || user;
+    user = await prisma.user.findUnique({
+      where: { id: user.id }
+    }) || user;
 
     const token = jwt.sign(
       {
@@ -818,7 +959,6 @@ router.post('/oauth/student/signup', async (req, res) => {
       });
     }
 
-    // Check if contact already exists
     let existingContact: any = null;
     let retryCount = 0;
     const maxRetries = 2;
@@ -857,7 +997,6 @@ router.post('/oauth/student/signup', async (req, res) => {
       });
     }
 
-    // Create new contact in GHL
     const contactData: any = {
       firstName,
       lastName,
@@ -923,12 +1062,13 @@ router.post('/oauth/student/signup', async (req, res) => {
         },
       });
     }
-await checkAndGrantAdminAccess(user.email, user.id);
 
-// Refresh user data to get updated admin status
-user = await prisma.user.findUnique({
-  where: { id: user.id }
-}) || user;
+    await checkAndGrantAdminAccess(user.email, user.id);
+
+    user = await prisma.user.findUnique({
+      where: { id: user.id }
+    }) || user;
+
     const token = jwt.sign(
       {
         userId: user.id,

@@ -306,153 +306,14 @@ router.put('/users/:id/permissions', requireAdmin, async (req, res) => {
       where: { id },
       data: updateData,
     });
-   console.log('✅ User permissions updated:', user.email); 
-    res.json(user);
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
-// ==========================================
-// ADMIN EMAIL MANAGEMENT (Super Admin Only)
-// ==========================================
 
-// Get all admin emails
-router.get('/admin-emails', requireAdmin, async (req, res) => {
-  try {
-    const adminEmails = await prisma.adminEmail.findMany({
-      orderBy: { addedAt: 'desc' }
-    });
-    res.json(adminEmails);
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Add admin email
-router.post('/admin-emails', requireAdmin, async (req, res) => {
-  try {
-    const { email } = req.body;
-
-    if (!email) {
-      return res.status(400).json({ error: 'Email is required' });
-    }
-
-    // Validate email format
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email)) {
-      return res.status(400).json({ error: 'Invalid email format' });
-    }
-
-    // Get current admin user
-    const currentUser = await prisma.user.findUnique({
-      where: { id: req.user!.userId },
-      select: { email: true }
-    });
-
-    // Create admin email
-    const adminEmail = await prisma.adminEmail.create({
-      data: {
-        email: email.toLowerCase(),
-        addedBy: currentUser?.email || 'unknown',
-      }
-    });
-
-    // If user already exists, grant them admin access
-    const existingUser = await prisma.user.findUnique({
-      where: { email: email.toLowerCase() }
-    });
-
-    if (existingUser) {
-      await prisma.user.update({
-        where: { id: existingUser.id },
-        data: {
-          isAdmin: true,
-          isStaff: true,
-          role: 'ADMIN',
-          hasAccessToQuestionBank: true,
-          hasAccessToTimedPractice: true,
-          hasAccessToAnalytics: true,
-        }
-      });
-    }
+    console.log('✅ User permissions updated:', user.email);
 
     res.json({ 
-      success: true, 
-      adminEmail,
-      userUpdated: !!existingUser
+      success: true,
+      user,
+      message: 'Permissions updated successfully. User will see changes on next page refresh.'
     });
-  } catch (error: any) {
-    if (error.code === 'P2002') {
-      return res.status(400).json({ error: 'This email is already an admin' });
-    }
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Remove admin email
-router.delete('/admin-emails/:id', requireAdmin, async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    // Get the email before deleting
-    const adminEmail = await prisma.adminEmail.findUnique({
-      where: { id }
-    });
-
-    if (!adminEmail) {
-      return res.status(404).json({ error: 'Admin email not found' });
-    }
-
-    // Delete the admin email
-    await prisma.adminEmail.delete({
-      where: { id }
-    });
-
-    // Optionally revoke admin access from user
-    // (You might want to keep their admin status even after email is removed)
-    // Uncomment if you want to revoke:
-    /*
-    const user = await prisma.user.findUnique({
-      where: { email: adminEmail.email }
-    });
-
-    if (user) {
-      await prisma.user.update({
-        where: { id: user.id },
-        data: {
-          isAdmin: false,
-          isStaff: false,
-          role: 'STUDENT',
-        }
-      });
-    }
-    */
-
-    res.json({ success: true });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Toggle admin email active status
-router.patch('/admin-emails/:id/toggle', requireAdmin, async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const adminEmail = await prisma.adminEmail.findUnique({
-      where: { id }
-    });
-
-    if (!adminEmail) {
-      return res.status(404).json({ error: 'Admin email not found' });
-    }
-
-    const updated = await prisma.adminEmail.update({
-      where: { id },
-      data: { isActive: !adminEmail.isActive }
-    });
-
-    res.json(updated);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -572,8 +433,338 @@ router.post('/users/sync-all-tags', requireAdmin, async (req, res) => {
       synced,
       failed,
       total: users.length,
-      errors: errors.slice(0, 10), // Return first 10 errors
+      errors: errors.slice(0, 10),
     });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ==========================================
+// TAG MANAGEMENT (Admin Only)
+// ==========================================
+
+// Add tag to user in GHL
+router.post('/users/:id/tags/add', requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { tag } = req.body;
+
+    if (!tag) {
+      return res.status(400).json({ error: 'Tag is required' });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id },
+      select: { ghlUserId: true, ghlCompanyId: true, email: true, ghlTags: true }
+    });
+
+    if (!user || !user.ghlUserId || !user.ghlCompanyId) {
+      return res.status(400).json({ error: 'User not linked to GHL' });
+    }
+
+    // Check if user already has the tag
+    if (user.ghlTags?.includes(tag)) {
+      return res.status(400).json({ error: 'User already has this tag' });
+    }
+
+    const companyAuth = await prisma.gHLCompanyAuth.findUnique({
+      where: { companyId: user.ghlCompanyId }
+    });
+
+    if (!companyAuth) {
+      return res.status(400).json({ error: 'Company not authorized' });
+    }
+
+    // Get valid token
+    let accessToken = companyAuth.accessToken;
+    const now = new Date();
+    const expiry = new Date(companyAuth.tokenExpiry);
+    
+    if (now >= expiry) {
+      const refreshResponse = await axios.post(
+        'https://services.leadconnectorhq.com/oauth/token',
+        new URLSearchParams({
+          client_id: process.env.GHL_CLIENT_ID!,
+          client_secret: process.env.GHL_CLIENT_SECRET!,
+          grant_type: 'refresh_token',
+          refresh_token: companyAuth.refreshToken,
+        }),
+        {
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+        }
+      );
+
+      accessToken = refreshResponse.data.access_token;
+    }
+
+    // Fetch current contact to get existing tags
+    const contactResponse = await axios.get(
+      `${GHL_API_BASE}/contacts/${user.ghlUserId}`,
+      {
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Version': '2021-07-28'
+        }
+      }
+    );
+
+    const currentTags = contactResponse.data.contact.tags || [];
+    const updatedTags = [...currentTags, tag];
+
+    // Update contact with new tags
+    await axios.put(
+      `${GHL_API_BASE}/contacts/${user.ghlUserId}`,
+      {
+        tags: updatedTags
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Version': '2021-07-28',
+          'Content-Type': 'application/json',
+        }
+      }
+    );
+
+    // Update local database
+    await prisma.user.update({
+      where: { id },
+      data: { ghlTags: updatedTags }
+    });
+
+    console.log(`✅ Tag "${tag}" added to user ${user.email}`);
+
+    res.json({
+      success: true,
+      message: `Tag "${tag}" added successfully`,
+      tags: updatedTags
+    });
+  } catch (error: any) {
+    console.error('Failed to add tag:', error);
+    res.status(500).json({ 
+      error: 'Failed to add tag to GHL',
+      details: error.response?.data || error.message
+    });
+  }
+});
+
+// Remove tag from user in GHL
+router.post('/users/:id/tags/remove', requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { tag } = req.body;
+
+    if (!tag) {
+      return res.status(400).json({ error: 'Tag is required' });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id },
+      select: { ghlUserId: true, ghlCompanyId: true, email: true, ghlTags: true }
+    });
+
+    if (!user || !user.ghlUserId || !user.ghlCompanyId) {
+      return res.status(400).json({ error: 'User not linked to GHL' });
+    }
+
+    // Check if user has the tag
+    if (!user.ghlTags?.includes(tag)) {
+      return res.status(400).json({ error: 'User does not have this tag' });
+    }
+
+    const companyAuth = await prisma.gHLCompanyAuth.findUnique({
+      where: { companyId: user.ghlCompanyId }
+    });
+
+    if (!companyAuth) {
+      return res.status(400).json({ error: 'Company not authorized' });
+    }
+
+    let accessToken = companyAuth.accessToken;
+    const now = new Date();
+    const expiry = new Date(companyAuth.tokenExpiry);
+    
+    if (now >= expiry) {
+      const refreshResponse = await axios.post(
+        'https://services.leadconnectorhq.com/oauth/token',
+        new URLSearchParams({
+          client_id: process.env.GHL_CLIENT_ID!,
+          client_secret: process.env.GHL_CLIENT_SECRET!,
+          grant_type: 'refresh_token',
+          refresh_token: companyAuth.refreshToken,
+        }),
+        {
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+        }
+      );
+
+      accessToken = refreshResponse.data.access_token;
+    }
+
+    const contactResponse = await axios.get(
+      `${GHL_API_BASE}/contacts/${user.ghlUserId}`,
+      {
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Version': '2021-07-28'
+        }
+      }
+    );
+
+    const currentTags = contactResponse.data.contact.tags || [];
+    const updatedTags = currentTags.filter((t: string) => t !== tag);
+
+    await axios.put(
+      `${GHL_API_BASE}/contacts/${user.ghlUserId}`,
+      {
+        tags: updatedTags
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Version': '2021-07-28',
+          'Content-Type': 'application/json',
+        }
+      }
+    );
+
+    await prisma.user.update({
+      where: { id },
+      data: { ghlTags: updatedTags }
+    });
+
+    console.log(`✅ Tag "${tag}" removed from user ${user.email}`);
+
+    res.json({
+      success: true,
+      message: `Tag "${tag}" removed successfully`,
+      tags: updatedTags
+    });
+  } catch (error: any) {
+    console.error('Failed to remove tag:', error);
+    res.status(500).json({ 
+      error: 'Failed to remove tag from GHL',
+      details: error.response?.data || error.message
+    });
+  }
+});
+
+// ==========================================
+// ADMIN EMAIL MANAGEMENT (Admin Only)
+// ==========================================
+
+// Get all admin emails
+router.get('/admin-emails', requireAdmin, async (req, res) => {
+  try {
+    const adminEmails = await prisma.adminEmail.findMany({
+      orderBy: { addedAt: 'desc' }
+    });
+    res.json(adminEmails);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Add admin email
+router.post('/admin-emails', requireAdmin, async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({ error: 'Invalid email format' });
+    }
+
+    const currentUser = await prisma.user.findUnique({
+      where: { id: req.user!.userId },
+      select: { email: true }
+    });
+
+    const adminEmail = await prisma.adminEmail.create({
+      data: {
+        email: email.toLowerCase(),
+        addedBy: currentUser?.email || 'unknown',
+      }
+    });
+
+    const existingUser = await prisma.user.findUnique({
+      where: { email: email.toLowerCase() }
+    });
+
+    if (existingUser) {
+      await prisma.user.update({
+        where: { id: existingUser.id },
+        data: {
+          isAdmin: true,
+          isStaff: true,
+          role: 'ADMIN',
+          hasAccessToQuestionBank: true,
+          hasAccessToTimedPractice: true,
+          hasAccessToAnalytics: true,
+        }
+      });
+    }
+
+    res.json({ 
+      success: true, 
+      adminEmail,
+      userUpdated: !!existingUser
+    });
+  } catch (error: any) {
+    if (error.code === 'P2002') {
+      return res.status(400).json({ error: 'This email is already an admin' });
+    }
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Remove admin email
+router.delete('/admin-emails/:id', requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const adminEmail = await prisma.adminEmail.findUnique({
+      where: { id }
+    });
+
+    if (!adminEmail) {
+      return res.status(404).json({ error: 'Admin email not found' });
+    }
+
+    await prisma.adminEmail.delete({
+      where: { id }
+    });
+
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Toggle admin email active status
+router.patch('/admin-emails/:id/toggle', requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const adminEmail = await prisma.adminEmail.findUnique({
+      where: { id }
+    });
+
+    if (!adminEmail) {
+      return res.status(404).json({ error: 'Admin email not found' });
+    }
+
+    const updated = await prisma.adminEmail.update({
+      where: { id },
+      data: { isActive: !adminEmail.isActive }
+    });
+
+    res.json(updated);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
