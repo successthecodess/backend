@@ -16,11 +16,23 @@ model AdminEmail {
   @@index([email])
   @@map("admin_emails")
 }
+model FreeTrialQuestion {
+  id          String   @id @default(cuid())
+  questionId  String
+  question    Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  orderIndex  Int      @unique // 1-10
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([orderIndex])
+}
 model User {
   id                String             @id @default(cuid())
   email             String             @unique
   name              String?
   password          String?
+  hasUsedFreeTrial Boolean @default(false)
+  freeTrialCompletedAt DateTime?
   ghlUserId         String?   @unique
   ghlAccessToken    String?   @db.Text
   ghlRefreshToken   String?   @db.Text
@@ -117,6 +129,7 @@ model Question {
   id                  String             @id @default(cuid())
   unitId              String
   topicId             String?
+  freeTrialQuestions   FreeTrialQuestion[] 
   type                QuestionType
   difficulty          DifficultyLevel
   questionText        String
@@ -444,6 +457,7 @@ enum SessionType {
   REVIEW
   TIMED_DRILL
   ADAPTIVE
+  FREE_TRIAL
 }
 
 enum ExamType {

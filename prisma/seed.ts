@@ -10,6 +10,15 @@ async function main() {
 
   // ADD THIS SECTION - Create feature flags
   const features = [
+     {
+      name: 'free_trial',
+      displayName: 'Free Trial Quiz',
+      description: 'Take a 10-question diagnostic quiz (one-time only)',
+      requiredGhlTag: null, // No tag required - everyone gets this
+      requiresPremium: false,
+      requiresStaff: false,
+      isEnabled: true,
+    },
     {
       name: 'question_bank',
       displayName: 'Question Bank Access',

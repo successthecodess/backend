@@ -4,38 +4,67 @@ import { AppError } from '../middleware/errorHandler.js';
 
 export class QuestionService {
   /**
-   * Get random question with specific difficulty - EXACT MATCH ONLY
+   * Get ALL questions at a specific difficulty level for random selection
+   */
+  async getAllQuestionsAtLevel(
+    unitId: string,
+    difficulty: DifficultyLevel,
+    excludeIds: string[] = [],
+    topicId?: string
+  ) {
+    console.log(`   → Fetching all ${difficulty} questions...`);
+    console.log(`      Unit: ${unitId}`);
+    console.log(`      Topic: ${topicId || 'All'}`);
+    console.log(`      Excluding: ${excludeIds.length} questions`);
+
+    const where: any = {
+      unitId,
+      difficulty,
+      approved: true,
+      id: { notIn: excludeIds },
+    };
+
+    if (topicId) {
+      where.topicId = topicId;
+    }
+
+    const questions = await prisma.question.findMany({
+      where,
+      include: {
+        topic: true,
+        unit: true,
+      },
+    });
+
+    console.log(`   → Found ${questions.length} questions`);
+
+    return questions;
+  }
+
+  /**
+   * Get random question with specific difficulty - Uses random selection
    */
   async getRandomQuestion(
     unitId: string,
     difficulty: DifficultyLevel,
-    excludeIds: string[] = []
+    excludeIds: string[] = [],
+    topicId?: string
   ) {
     console.log(`🔍 Searching for ${difficulty} question in unit ${unitId}, excluding ${excludeIds.length} questions`);
 
-    const question = await prisma.question.findFirst({
-      where: {
-        unitId,
-        difficulty, // MUST match exactly
-        approved: true,
-        id: {
-          notIn: excludeIds,
-        },
-      },
-      include: {
-        unit: true,
-        topic: true,
-      },
-      orderBy: {
-        createdAt: 'desc',
-      },
-    });
+    // Get all matching questions
+    const questions = await this.getAllQuestionsAtLevel(unitId, difficulty, excludeIds, topicId);
 
-    if (question) {
-      console.log(`✅ Found ${question.difficulty} question: ${question.id}`);
-    } else {
+    if (questions.length === 0) {
       console.log(`❌ No ${difficulty} questions found`);
+      return null;
     }
+
+    // Randomly select one
+    const randomIndex = Math.floor(Math.random() * questions.length);
+    const question = questions[randomIndex];
+
+    console.log(`✅ Randomly selected question ${randomIndex + 1} of ${questions.length}: ${question.id}`);
 
     return question;
   }

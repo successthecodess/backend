@@ -128,9 +128,9 @@ export class PracticeSessionService {
 
       console.log('✅ Session created:', session.id);
 
-      // Get first question matching student's level
-      console.log(`📚 Requesting ${studentLevel} question...`);
-      let question = await questionService.getRandomQuestion(unitId, studentLevel, []);
+      // Get first question matching student's level (RANDOM)
+      console.log(`📚 Requesting random ${studentLevel} question...`);
+      let question = await questionService.getRandomQuestion(unitId, studentLevel, [], topicId);
 
       if (!question) {
         // If no questions at student's level, try nearby difficulties
@@ -145,9 +145,9 @@ export class PracticeSessionService {
         ].filter(i => i >= 0 && i < difficulties.length);
 
         for (const index of tryOrder) {
-          question = await questionService.getRandomQuestion(unitId, difficulties[index] as any, []);
+          question = await questionService.getRandomQuestion(unitId, difficulties[index] as any, [], topicId);
           if (question) {
-            console.log(`⚠️ Using ${difficulties[index]} question (fallback)\n`);
+            console.log(`⚠️ Using random ${difficulties[index]} question (fallback)\n`);
             break;
           }
         }
@@ -177,143 +177,168 @@ export class PracticeSessionService {
   }
 
   /**
-   * Get next question - ALWAYS MATCHES STUDENT'S CURRENT LEVEL
+   * Get next question - ALWAYS MATCHES STUDENT'S CURRENT LEVEL with RANDOM SELECTION
    */
-  /**
- * Get next question - ALWAYS MATCHES STUDENT'S CURRENT LEVEL
- */
-async getNextQuestion(
-  userId: string,
-  sessionId: string,
-  unitId: string,
-  answeredQuestionIds: string[],
-  topicId?: string
-) {
-  console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log('🎯 GET NEXT QUESTION');
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log('User ID:', userId);
-  console.log('Session ID:', sessionId);
-  console.log('Unit ID:', unitId);
-  console.log('Topic ID:', topicId);
-  console.log('Answered count:', answeredQuestionIds.length);
+  async getNextQuestion(
+    userId: string,
+    sessionId: string,
+    unitId: string,
+    answeredQuestionIds: string[],
+    topicId?: string
+  ) {
+    console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('🎯 GET NEXT QUESTION');
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('User ID:', userId);
+    console.log('Session ID:', sessionId);
+    console.log('Unit ID:', unitId);
+    console.log('Topic ID:', topicId);
+    console.log('Answered count:', answeredQuestionIds.length);
 
-  try {
-    const session = await prisma.studySession.findUnique({
-      where: { id: sessionId },
-    });
+    try {
+      const session = await prisma.studySession.findUnique({
+        where: { id: sessionId },
+      });
 
-    if (!session) {
-      throw new AppError('Session not found', 404);
-    }
+      if (!session) {
+        throw new AppError('Session not found', 404);
+      }
 
-    const targetQuestions = session.targetQuestions || this.QUESTIONS_PER_SESSION;
+      const targetQuestions = session.targetQuestions || this.QUESTIONS_PER_SESSION;
 
-    if (session.totalQuestions >= targetQuestions) {
-      console.log('✅ Session complete!');
-      return null;
-    }
+      if (session.totalQuestions >= targetQuestions) {
+        console.log('✅ Session complete!');
+        return null;
+      }
 
-    console.log(`Questions remaining: ${targetQuestions - session.totalQuestions}`);
+      console.log(`Questions remaining: ${targetQuestions - session.totalQuestions}`);
 
-    // CRITICAL: Get FRESH student difficulty from database
-    console.log('\n📊 FETCHING FRESH STUDENT LEVEL FROM DATABASE...');
-    
-    // Get the actual progress record from database
-    const progressRecord = await prisma.progress.findFirst({
-      where: {
-        userId,
-        unitId,
-        topicId: topicId === undefined ? null : topicId,
-      },
-    });
+      // CRITICAL: Get FRESH student difficulty from database
+      console.log('\n📊 FETCHING FRESH STUDENT LEVEL FROM DATABASE...');
+      
+      // Get the actual progress record from database
+      const progressRecord = await prisma.progress.findFirst({
+        where: {
+          userId,
+          unitId,
+          topicId: topicId === undefined ? null : topicId,
+        },
+      });
 
-    if (!progressRecord) {
-      console.log('   → No progress found - defaulting to EASY');
-      const studentLevel = 'EASY';
+      if (!progressRecord) {
+        console.log('   → No progress found - defaulting to EASY');
+        const studentLevel = 'EASY';
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        console.log('🎯 STUDENT CURRENT LEVEL:', studentLevel);
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+
+        // 🎲 RANDOM SELECTION
+        console.log(`📚 Fetching ALL ${studentLevel} questions for random selection...`);
+        const allQuestions = await questionService.getAllQuestionsAtLevel(
+          unitId,
+          studentLevel as any,
+          answeredQuestionIds,
+          topicId
+        );
+
+        if (allQuestions.length === 0) {
+          console.log('⚠️ No questions available at EASY level');
+          return null;
+        }
+
+        // Randomly select one
+        const randomIndex = Math.floor(Math.random() * allQuestions.length);
+        const question = allQuestions[randomIndex];
+
+        console.log(`🎲 Randomly selected question ${randomIndex + 1} of ${allQuestions.length}`);
+        console.log('✅ Question found:', question.difficulty);
+
+        return question;
+      }
+
+      const studentLevel = progressRecord.currentDifficulty;
+
+      console.log('   → Database Progress:');
+      console.log('      - Current Difficulty:', progressRecord.currentDifficulty);
+      console.log('      - Total Attempts:', progressRecord.totalAttempts);
+      console.log('      - Mastery:', progressRecord.masteryLevel + '%');
+      console.log('      - Consecutive Correct:', progressRecord.consecutiveCorrect);
+      console.log('      - Consecutive Wrong:', progressRecord.consecutiveWrong);
+
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
       console.log('🎯 STUDENT CURRENT LEVEL:', studentLevel);
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
-      const question = await questionService.getRandomQuestion(
+      // 🎲 RANDOM SELECTION - Get ALL questions matching student's EXACT level
+      console.log(`📚 Fetching ALL ${studentLevel} questions for random selection...`);
+      let allQuestions = await questionService.getAllQuestionsAtLevel(
         unitId,
-        studentLevel,
-        answeredQuestionIds
+        studentLevel as any,
+        answeredQuestionIds,
+        topicId
       );
 
-      if (question) {
-        console.log('✅ Question found:', question.difficulty);
-      }
+      if (allQuestions.length > 0) {
+        // Randomly select one from the pool
+        const randomIndex = Math.floor(Math.random() * allQuestions.length);
+        const question = allQuestions[randomIndex];
 
-      return question;
-    }
-
-    const studentLevel = progressRecord.currentDifficulty;
-
-    console.log('   → Database Progress:');
-    console.log('      - Current Difficulty:', progressRecord.currentDifficulty);
-    console.log('      - Total Attempts:', progressRecord.totalAttempts);
-    console.log('      - Mastery:', progressRecord.masteryLevel + '%');
-    console.log('      - Consecutive Correct:', progressRecord.consecutiveCorrect);
-    console.log('      - Consecutive Wrong:', progressRecord.consecutiveWrong);
-
-    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    console.log('🎯 STUDENT CURRENT LEVEL:', studentLevel);
-    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
-
-    // Get question matching student's EXACT level
-    console.log(`📚 Requesting ${studentLevel} question from database...`);
-    let question = await questionService.getRandomQuestion(
-      unitId,
-      studentLevel,
-      answeredQuestionIds
-    );
-
-    if (question) {
-      console.log('\n✅ QUESTION RETRIEVED:');
-      console.log('   - Question ID:', question.id);
-      console.log('   - Question Difficulty:', question.difficulty);
-      console.log('   - Student Level:', studentLevel);
-      
-      if (question.difficulty === studentLevel) {
-        console.log('   - MATCH: ✅ YES - PERFECT!');
-      } else {
-        console.log('   - MATCH: ❌ NO - BUG DETECTED!');
-        console.log('   - Expected:', studentLevel);
-        console.log('   - Got:', question.difficulty);
-      }
-      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
-    } else {
-      console.log(`\n⚠️ No ${studentLevel} questions available (${answeredQuestionIds.length} excluded)`);
-      console.log('Trying fallback...\n');
-      
-      const difficulties = ['EASY', 'MEDIUM', 'HARD', 'EXPERT'];
-      const currentIndex = difficulties.indexOf(studentLevel);
-      
-      // Try closest difficulties first
-      const fallbackOrder = [
-        currentIndex - 1,
-        currentIndex + 1,
-      ].filter(i => i >= 0 && i < difficulties.length);
-
-      for (const index of fallbackOrder) {
-        const fallbackLevel = difficulties[index] as any;
-        console.log(`   Trying ${fallbackLevel}...`);
-        question = await questionService.getRandomQuestion(
-          unitId,
-          fallbackLevel,
-          answeredQuestionIds
-        );
+        console.log('\n✅ QUESTION RETRIEVED:');
+        console.log(`   - 🎲 Randomly selected ${randomIndex + 1} of ${allQuestions.length} available questions`);
+        console.log('   - Question ID:', question.id);
+        console.log('   - Question Difficulty:', question.difficulty);
+        console.log('   - Student Level:', studentLevel);
         
-        if (question) {
-          console.log(`   ⚠️ Using ${question.difficulty} question (fallback from ${studentLevel})`);
-          console.log(`   ⚠️ THIS IS A FALLBACK - NOT ENOUGH ${studentLevel} QUESTIONS\n`);
-          break;
+        if (question.difficulty === studentLevel) {
+          console.log('   - MATCH: ✅ YES - PERFECT!');
+        } else {
+          console.log('   - MATCH: ❌ NO - BUG DETECTED!');
+          console.log('   - Expected:', studentLevel);
+          console.log('   - Got:', question.difficulty);
+        }
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+
+        return question;
+      } else {
+        console.log(`\n⚠️ No ${studentLevel} questions available (${answeredQuestionIds.length} excluded)`);
+        console.log('Trying fallback...\n');
+        
+        const difficulties = ['EASY', 'MEDIUM', 'HARD', 'EXPERT'];
+        const currentIndex = difficulties.indexOf(studentLevel);
+        
+        // Try closest difficulties first
+        const fallbackOrder = [
+          currentIndex - 1,
+          currentIndex + 1,
+          currentIndex - 2,
+          currentIndex + 2,
+        ].filter(i => i >= 0 && i < difficulties.length);
+
+        for (const index of fallbackOrder) {
+          const fallbackLevel = difficulties[index] as any;
+          console.log(`   Trying ${fallbackLevel}...`);
+          
+          allQuestions = await questionService.getAllQuestionsAtLevel(
+            unitId,
+            fallbackLevel,
+            answeredQuestionIds,
+            topicId
+          );
+          
+          if (allQuestions.length > 0) {
+            // Randomly select from fallback pool
+            const randomIndex = Math.floor(Math.random() * allQuestions.length);
+            const question = allQuestions[randomIndex];
+
+            console.log(`   ⚠️ Randomly selected ${randomIndex + 1} of ${allQuestions.length} ${fallbackLevel} questions`);
+            console.log(`   ⚠️ Using ${question.difficulty} question (fallback from ${studentLevel})`);
+            console.log(`   ⚠️ THIS IS A FALLBACK - NOT ENOUGH ${studentLevel} QUESTIONS\n`);
+            
+            return question;
+          }
         }
       }
-    }
 
-    if (!question) {
       console.log('❌ No more questions available');
       
       const totalQuestions = await questionService.getQuestionCounts(unitId);
@@ -329,99 +354,95 @@ async getNextQuestion(
           404
         );
       }
+    } catch (error) {
+      console.error('❌ Error in getNextQuestion:', error);
+      throw error;
     }
-
-    return question;
-  } catch (error) {
-    console.error('❌ Error in getNextQuestion:', error);
-    throw error;
   }
-}
+
   /**
    * Submit an answer for a question
    */
-/**
- * Submit an answer for a question
- */
-async submitAnswer(
-  userId: string,
-  sessionId: string,
-  questionId: string,
-  userAnswer: string,
-  timeSpent?: number
-) {
-  console.log('\n📝 SUBMITTING ANSWER');
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log('User ID:', userId);
-  console.log('Session ID:', sessionId);
-  console.log('Question ID:', questionId);
-  console.log('Answer:', userAnswer);
-
-  try {
-    // Get session to know which unit we're in
-    const session = await prisma.studySession.findUnique({
-      where: { id: sessionId },
-    });
-
-    if (!session) {
-      throw new AppError('Session not found', 404);
-    }
-
-    console.log('Session Unit ID:', session.unitId);
-    console.log('Session Topic ID:', session.topicId);
-
-    // Submit answer to question service
-    const result = await questionService.submitAnswer(
-      userId,
-      questionId,
-      userAnswer,
-      timeSpent
-    );
-
-    console.log('✅ Answer result:', result.isCorrect ? '✅ Correct' : '❌ Incorrect');
-
-    // Update session statistics
-    const updateData: any = {
-      totalQuestions: { increment: 1 },
-    };
-
-    if (result.isCorrect) {
-      updateData.correctAnswers = { increment: 1 };
-    }
-
-    const updatedSession = await prisma.studySession.update({
-      where: { id: sessionId },
-      data: updateData,
-    });
-
-    console.log('✅ Session updated');
-
-    // CRITICAL: Use session's unitId and topicId for progress, NOT question's!
-    console.log('\n📊 Updating student progress...');
-    console.log('   Using Unit ID from SESSION:', session.unitId);
-    console.log('   Using Topic ID from SESSION:', session.topicId);
-    
-    const progress = await adaptiveLearningService.updateProgress(
-      userId,
-      questionId,
-      result.isCorrect,
-      timeSpent
-    );
-
+  async submitAnswer(
+    userId: string,
+    sessionId: string,
+    questionId: string,
+    userAnswer: string,
+    timeSpent?: number
+  ) {
+    console.log('\n📝 SUBMITTING ANSWER');
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    console.log('✅ PROGRESS UPDATED - NEW LEVEL:', progress.currentDifficulty);
-    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+    console.log('User ID:', userId);
+    console.log('Session ID:', sessionId);
+    console.log('Question ID:', questionId);
+    console.log('Answer:', userAnswer);
 
-    return {
-      ...result,
-      session: updatedSession,
-      progress,
-    };
-  } catch (error) {
-    console.error('❌ Error in submitAnswer:', error);
-    throw error;
+    try {
+      // Get session to know which unit we're in
+      const session = await prisma.studySession.findUnique({
+        where: { id: sessionId },
+      });
+
+      if (!session) {
+        throw new AppError('Session not found', 404);
+      }
+
+      console.log('Session Unit ID:', session.unitId);
+      console.log('Session Topic ID:', session.topicId);
+
+      // Submit answer to question service
+      const result = await questionService.submitAnswer(
+        userId,
+        questionId,
+        userAnswer,
+        timeSpent
+      );
+
+      console.log('✅ Answer result:', result.isCorrect ? '✅ Correct' : '❌ Incorrect');
+
+      // Update session statistics
+      const updateData: any = {
+        totalQuestions: { increment: 1 },
+      };
+
+      if (result.isCorrect) {
+        updateData.correctAnswers = { increment: 1 };
+      }
+
+      const updatedSession = await prisma.studySession.update({
+        where: { id: sessionId },
+        data: updateData,
+      });
+
+      console.log('✅ Session updated');
+
+      // CRITICAL: Use session's unitId and topicId for progress, NOT question's!
+      console.log('\n📊 Updating student progress...');
+      console.log('   Using Unit ID from SESSION:', session.unitId);
+      console.log('   Using Topic ID from SESSION:', session.topicId);
+      
+      const progress = await adaptiveLearningService.updateProgress(
+        userId,
+        questionId,
+        result.isCorrect,
+        timeSpent
+      );
+
+      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.log('✅ PROGRESS UPDATED - NEW LEVEL:', progress.currentDifficulty);
+      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+
+      return {
+        ...result,
+        session: updatedSession,
+        progress,
+      };
+    } catch (error) {
+      console.error('❌ Error in submitAnswer:', error);
+      throw error;
+    }
   }
-}
+
   /**
    * End a practice session
    */
