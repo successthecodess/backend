@@ -21,16 +21,19 @@ export async function getSecrets(): Promise<Secrets> {
 
   const environment = process.env.NODE_ENV || 'development';
   
-  // In development, always use .env - don't try AWS Secrets Manager
-  if (environment === 'development') {
-    console.log('🔧 Development mode: Loading secrets from .env file');
+  // Check if running on Railway or other platforms with direct env vars
+  const isRailway = process.env.RAILWAY_ENVIRONMENT !== undefined;
+  const hasDirectEnvVars = process.env.JWT_SECRET && process.env.DATABASE_URL;
+  
+  // Use direct env vars if in development, Railway, or env vars are set
+  if (environment === 'development' || isRailway || hasDirectEnvVars) {
+    console.log('🔧 Loading secrets from environment variables');
     
-    // Validate required secrets exist
     if (!process.env.JWT_SECRET) {
-      throw new Error('JWT_SECRET is required in .env file');
+      throw new Error('JWT_SECRET is required in environment variables');
     }
     if (!process.env.DATABASE_URL) {
-      throw new Error('DATABASE_URL is required in .env file');
+      throw new Error('DATABASE_URL is required in environment variables');
     }
     
     cachedSecrets = {
@@ -41,11 +44,11 @@ export async function getSecrets(): Promise<Secrets> {
       ENCRYPTION_KEY: process.env.ENCRYPTION_KEY || '',
     };
     
-    console.log('✅ Secrets loaded from .env file');
+    console.log('✅ Secrets loaded from environment variables');
     return cachedSecrets;
   }
 
-  // Production: Load from AWS Secrets Manager
+  // Only use AWS Secrets Manager if explicitly configured
   const secretName = `${environment}/apcs-platform`;
   console.log(`📦 Loading secrets from AWS Secrets Manager: ${secretName}`);
 
@@ -63,13 +66,7 @@ export async function getSecrets(): Promise<Secrets> {
     return cachedSecrets;
   } catch (error: any) {
     console.error('❌ Failed to load secrets from AWS Secrets Manager:', error);
-    console.error('Error details:', {
-      name: error.name,
-      message: error.message,
-      code: error.code,
-    });
-    
-    throw new Error(`Failed to load secrets in production: ${error.message}`);
+    throw new Error(`Failed to load secrets: ${error.message}`);
   }
 }
 

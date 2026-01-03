@@ -8,13 +8,26 @@ export interface TokenPayload {
   email: string;
 }
 
-export async function generateTokenPair(userId: string, email: string) {
+// Cache the JWT secret to avoid repeated AWS calls
+let jwtSecretCache: string | null = null;
+
+async function getJwtSecret(): Promise<string> {
+  if (jwtSecretCache) {
+    return jwtSecretCache;
+  }
+  
   const secrets = await getSecrets();
+  jwtSecretCache = secrets.JWT_SECRET;
+  return jwtSecretCache;
+}
+
+export async function generateTokenPair(userId: string, email: string) {
+  const jwtSecret = await getJwtSecret();
   
   // Short-lived access token (15 minutes)
   const accessToken = jwt.sign(
     { userId, email } as TokenPayload,
-    secrets.JWT_SECRET,
+    jwtSecret,
     { expiresIn: '15m' }
   );
 
@@ -35,8 +48,8 @@ export async function generateTokenPair(userId: string, email: string) {
 }
 
 export async function verifyAccessToken(token: string): Promise<TokenPayload> {
-  const secrets = await getSecrets();
-  const decoded = jwt.verify(token, secrets.JWT_SECRET) as TokenPayload;
+  const jwtSecret = await getJwtSecret();
+  const decoded = jwt.verify(token, jwtSecret) as TokenPayload;
   return decoded;
 }
 
@@ -60,13 +73,13 @@ export async function refreshAccessToken(refreshToken: string) {
   }
 
   // Generate new access token
-  const secrets = await getSecrets();
+  const jwtSecret = await getJwtSecret();
   const accessToken = jwt.sign(
     {
       userId: storedToken.user.id,
       email: storedToken.user.email,
     } as TokenPayload,
-    secrets.JWT_SECRET,
+    jwtSecret,
     { expiresIn: '15m' }
   );
 
