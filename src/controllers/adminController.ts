@@ -5,6 +5,64 @@ import { AuditLogger, AuditAction } from '../utils/auditLogger.js';
 import csv from 'csv-parser';
 import { Readable } from 'stream';
 
+
+export const deleteUser = asyncHandler(async (req: Request, res: Response) => {
+  const { userId } = req.params;
+  const adminId = (req as any).user.userId;
+
+  // Get user info before deletion for audit log
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: {
+      id: true,
+      email: true,
+      name: true,
+      role: true,
+      isAdmin: true,
+    },
+  });
+
+  if (!user) {
+    throw new AppError('User not found', 404);
+  }
+
+  // Prevent deleting admin users
+  if (user.isAdmin || user.role === 'ADMIN') {
+    throw new AppError('Cannot delete admin users', 403);
+  }
+
+  // Prevent self-deletion
+  if (userId === adminId) {
+    throw new AppError('Cannot delete your own account', 403);
+  }
+
+  // Delete user and all associated data
+  // Prisma will cascade delete based on schema relationships
+  await prisma.user.delete({
+    where: { id: userId },
+  });
+
+  // Log the deletion
+  await AuditLogger.logAdminAction(
+    AuditAction.USER_DELETE,
+    adminId,
+    `user:${userId}`,
+    true,
+    {
+      deletedUser: {
+        email: user.email,
+        name: user.name,
+        role: user.role,
+      },
+      reason: 'Deleted from portal - user can sign up fresh',
+    }
+  );
+
+  res.json({
+    success: true,
+    message: `User ${user.email} deleted successfully from portal`,
+  });
+});
 export const getAdminStats = asyncHandler(async (req: Request, res: Response) => {
   const [totalQuestions, approvedQuestions, totalAttempts] = await Promise.all([
     prisma.question.count(),

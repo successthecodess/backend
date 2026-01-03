@@ -3,6 +3,7 @@ import prisma from '../config/database.js';
 import { requireAdmin, requireStaff } from '../middleware/rbac.js';
 import { AuditLogger } from '../utils/auditLogger.js';
 import { authenticateToken } from '../middleware/auth.js';
+import { deleteUser } from '../controllers/adminController.js';
 import axios from 'axios';
 import {
   getAdminStats,
@@ -39,7 +40,7 @@ router.put('/questions/:questionId', requireAdmin, updateQuestion);
 router.delete('/questions/:questionId', requireAdmin, deleteQuestion);
 router.patch('/questions/:questionId/approve', requireAdmin, approveQuestion);
 router.post('/questions/bulk-upload', requireAdmin, upload.single('file'), bulkUploadQuestions);
-
+router.delete('/users/:userId', requireAdmin, deleteUser);
 // ==========================================
 // FEATURE FLAG MANAGEMENT (Admin Only)
 // ==========================================
