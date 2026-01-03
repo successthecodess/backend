@@ -6,6 +6,20 @@ datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
 }
+model RefreshToken {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([token])
+  @@index([expiresAt])
+}
+
 model AdminEmail {
   id        String   @id @default(cuid())
   email     String   @unique
@@ -26,11 +40,31 @@ model FreeTrialQuestion {
 
   @@index([orderIndex])
 }
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action    String   // LOGIN, ADMIN_GRANT, TAG_ADD, etc.
+  resource  String?  // user:123, question:456, etc.
+  success   Boolean
+  ipAddress String?
+  userAgent String?
+  metadata  Json?    // Additional context
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+  @@index([success])
+}
+
 model User {
   id                String             @id @default(cuid())
   email             String             @unique
   name              String?
   password          String?
+  refreshTokens   RefreshToken[]  
+  auditLogs       AuditLog[] 
   hasUsedFreeTrial Boolean @default(false)
   freeTrialCompletedAt DateTime?
   ghlUserId         String?   @unique

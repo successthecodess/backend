@@ -1,10 +1,15 @@
 import { Request, Response, NextFunction } from 'express';
-import jwt from 'jsonwebtoken';
+import { verifyAccessToken } from '../utils/tokenManager.js';
+import { AuditLogger, AuditAction } from '../utils/auditLogger.js';
 
 // Use the global Express.Request extension from rbac.ts
 // No need to redefine the interface here
 
-export const authenticateToken = (req: Request, res: Response, next: NextFunction) => {
+export const authenticateToken = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
   try {
     const authHeader = req.headers.authorization;
     
@@ -14,45 +19,52 @@ export const authenticateToken = (req: Request, res: Response, next: NextFunctio
 
     const token = authHeader.substring(7); // Remove 'Bearer ' prefix
     
-    const decoded = jwt.verify(token, process.env.JWT_SECRET!) as {
-      userId: string;
-      email: string;
-      name: string;
-      ghlUserId?: string;
-    };
+    // Use the new token manager with secrets
+    const decoded = await verifyAccessToken(token);
 
     // Set user on request
     req.user = {
       userId: decoded.userId,
       email: decoded.email,
-      name: decoded.name,
-      ghlUserId: decoded.ghlUserId,
     };
 
     next();
-  } catch (error) {
+  } catch (error: any) {
+    if (error.name === 'TokenExpiredError') {
+      return res.status(401).json({
+        error: 'Token expired',
+        code: 'TOKEN_EXPIRED',
+      });
+    }
+    
+    // Log failed authentication attempt
+    await AuditLogger.log({
+      action: AuditAction.ACCESS_DENIED,
+      success: false,
+      ipAddress: req.ip || req.socket.remoteAddress,
+      userAgent: req.headers['user-agent'],
+      metadata: { reason: 'Invalid token', endpoint: req.path },
+    });
+    
     return res.status(401).json({ error: 'Invalid or expired token' });
   }
 };
 
-export const optionalAuth = (req: Request, res: Response, next: NextFunction) => {
+export const optionalAuth = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
   try {
     const authHeader = req.headers.authorization;
     
     if (authHeader && authHeader.startsWith('Bearer ')) {
       const token = authHeader.substring(7);
-      const decoded = jwt.verify(token, process.env.JWT_SECRET!) as {
-        userId: string;
-        email: string;
-        name: string;
-        ghlUserId?: string;
-      };
+      const decoded = await verifyAccessToken(token);
       
       req.user = {
         userId: decoded.userId,
         email: decoded.email,
-        name: decoded.name,
-        ghlUserId: decoded.ghlUserId,
       };
     }
     

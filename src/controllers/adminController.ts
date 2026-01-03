@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import prisma from '../config/database.js';
 import { asyncHandler, AppError } from '../middleware/errorHandler.js';
+import { AuditLogger, AuditAction } from '../utils/auditLogger.js';
 import csv from 'csv-parser';
 import { Readable } from 'stream';
 
@@ -106,6 +107,18 @@ export const createQuestion = asyncHandler(async (req: Request, res: Response) =
     },
   });
 
+  // Audit log
+  const userId = (req as any).user?.userId;
+  if (userId) {
+    await AuditLogger.logAdminAction(
+      AuditAction.USER_CREATE,
+      userId,
+      `question:${question.id}`,
+      true,
+      { unitId, difficulty, type }
+    );
+  }
+
   res.status(201).json({
     status: 'success',
     data: { question },
@@ -139,6 +152,18 @@ export const updateQuestion = asyncHandler(async (req: Request, res: Response) =
     },
   });
 
+  // Audit log
+  const userId = (req as any).user?.userId;
+  if (userId) {
+    await AuditLogger.logAdminAction(
+      AuditAction.USER_UPDATE,
+      userId,
+      `question:${questionId}`,
+      true,
+      { updatedFields: Object.keys(updateData) }
+    );
+  }
+
   res.status(200).json({
     status: 'success',
     data: { question },
@@ -151,6 +176,17 @@ export const deleteQuestion = asyncHandler(async (req: Request, res: Response) =
   await prisma.question.delete({
     where: { id: questionId },
   });
+
+  // Audit log
+  const userId = (req as any).user?.userId;
+  if (userId) {
+    await AuditLogger.logAdminAction(
+      AuditAction.USER_DELETE,
+      userId,
+      `question:${questionId}`,
+      true
+    );
+  }
 
   res.status(200).json({
     status: 'success',
@@ -167,6 +203,18 @@ export const approveQuestion = asyncHandler(async (req: Request, res: Response) 
     data: { approved },
   });
 
+  // Audit log
+  const userId = (req as any).user?.userId;
+  if (userId) {
+    await AuditLogger.logAdminAction(
+      AuditAction.USER_UPDATE,
+      userId,
+      `question:${questionId}`,
+      true,
+      { action: 'approve', approved }
+    );
+  }
+
   res.status(200).json({
     status: 'success',
     data: { question },
@@ -178,6 +226,7 @@ export const bulkUploadQuestions = asyncHandler(async (req: Request, res: Respon
     throw new AppError('No file uploaded', 400);
   }
 
+  const userId = (req as any).user?.userId;
   const results: any[] = [];
   const errors: any[] = [];
 
@@ -315,6 +364,22 @@ export const bulkUploadQuestions = asyncHandler(async (req: Request, res: Respon
 
       console.log(`Bulk upload complete: ${successCount} success, ${failCount} failed`);
 
+      // Audit log the bulk upload
+      if (userId) {
+        await AuditLogger.logAdminAction(
+          AuditAction.EXPORT_DATA,
+          userId,
+          'bulk-upload',
+          true,
+          {
+            totalRows: results.length,
+            successCount,
+            failCount,
+            fileName: req.file?.originalname,
+          }
+        );
+      }
+
       res.status(200).json({
         status: 'success',
         data: {
@@ -324,8 +389,20 @@ export const bulkUploadQuestions = asyncHandler(async (req: Request, res: Respon
         },
       });
     })
-    .on('error', (error) => {
+    .on('error', async (error) => {
       console.error('CSV parsing error:', error);
+      
+      // Audit log the failure
+      if (userId) {
+        await AuditLogger.logAdminAction(
+          AuditAction.EXPORT_DATA,
+          userId,
+          'bulk-upload',
+          false,
+          { error: error.message }
+        );
+      }
+      
       throw new AppError('Failed to parse CSV file', 400);
     });
 });

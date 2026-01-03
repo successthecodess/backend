@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import prisma from '../config/database.js';
 import { requireAdmin, requireStaff } from '../middleware/rbac.js';
+import { AuditLogger } from '../utils/auditLogger.js';
 import { authenticateToken } from '../middleware/auth.js';
 import axios from 'axios';
 import {
@@ -834,4 +835,49 @@ router.delete('/free-trial/questions/:orderIndex', requireAdmin, async (req, res
   }
 });
 
+// Get recent audit logs (admin only)
+router.get('/audit-logs', requireAdmin, async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit as string) || 100;
+    const logs = await AuditLogger.getRecentLogs(limit);
+    
+    res.json({
+      status: 'success',
+      data: { logs },
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get user-specific audit logs
+router.get('/audit-logs/user/:userId', requireAdmin, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const limit = parseInt(req.query.limit as string) || 50;
+    const logs = await AuditLogger.getUserLogs(userId, limit);
+    
+    res.json({
+      status: 'success',
+      data: { logs },
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get failed login attempts
+router.get('/audit-logs/failed-logins', requireAdmin, async (req, res) => {
+  try {
+    const hours = parseInt(req.query.hours as string) || 24;
+    const logs = await AuditLogger.getFailedLogins(hours);
+    
+    res.json({
+      status: 'success',
+      data: { logs },
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
 export default router;
