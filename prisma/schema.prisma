@@ -482,6 +482,7 @@ enum DifficultyLevel {
   EASY
   MEDIUM
   HARD
+  EXPERT
 }
 
 enum SessionType {
