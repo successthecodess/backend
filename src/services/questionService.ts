@@ -86,7 +86,7 @@ export class QuestionService {
    * Get question counts by difficulty
    */
   async getQuestionCounts(unitId: string) {
-    const [total, easy, medium, hard, expert] = await Promise.all([
+    const [total, easy, medium, hard] = await Promise.all([
       prisma.question.count({
         where: { unitId, approved: true },
       }),
@@ -99,12 +99,10 @@ export class QuestionService {
       prisma.question.count({
         where: { unitId, approved: true, difficulty: 'HARD' },
       }),
-      prisma.question.count({
-        where: { unitId, approved: true, difficulty: 'EXPERT' },
-      }),
+    
     ]);
 
-    return { total, easy, medium, hard, expert };
+    return { total, easy, medium, hard};
   }
 
   /**

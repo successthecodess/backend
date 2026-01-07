@@ -58,7 +58,7 @@ export const getAnalytics = asyncHandler(async (req: Request, res: Response) => 
   const averageTime = avgTimeResult._avg.timeSpent || 0;
 
   // Get performance by difficulty
-  const difficulties = ['EASY', 'MEDIUM', 'HARD', 'EXPERT'];
+  const difficulties = ['EASY', 'MEDIUM', 'HARD'];
   const byDifficulty: any = {};
 
   for (const difficulty of difficulties) {

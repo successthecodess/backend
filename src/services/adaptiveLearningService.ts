@@ -65,7 +65,7 @@ export class AdaptiveLearningService {
     totalAttempts: number,
     recentAccuracy: number
   ): DifficultyLevel {
-    const difficulties: DifficultyLevel[] = ['EASY', 'MEDIUM', 'HARD', 'EXPERT'];
+    const difficulties: DifficultyLevel[] = ['EASY', 'MEDIUM', 'HARD'];
     const currentIndex = difficulties.indexOf(currentDifficulty);
 
     console.log('\n🎯 Difficulty Analysis:', {
@@ -129,11 +129,11 @@ export class AdaptiveLearningService {
       return difficulties[1];
     }
 
-    // Drop from HARD/EXPERT if struggling
-    if (currentIndex >= 2 && recentAccuracy < 55 && totalAttempts >= 8) {
-      console.log(`📉 Dropping from ${currentDifficulty} (sustained struggles)`);
-      return difficulties[currentIndex - 1];
-    }
+     // Drop from HARD if struggling
+  if (currentIndex === 2 && recentAccuracy < 55 && totalAttempts >= 8) {
+    console.log(`📉 Dropping from HARD (sustained struggles)`);
+    return difficulties[currentIndex - 1];
+  }
 
     console.log(`✓ Staying at ${currentDifficulty}`);
     return currentDifficulty;
@@ -497,7 +497,7 @@ async getRecommendedDifficulty(userId: string, unitId: string, topicId?: string)
   // Check if review is needed (spaced repetition)
   if (progress.nextReviewDate && new Date() >= progress.nextReviewDate) {
     console.log('   → Review needed - dropping one level');
-    const difficulties: DifficultyLevel[] = ['EASY', 'MEDIUM', 'HARD', 'EXPERT'];
+    const difficulties: DifficultyLevel[] = ['EASY', 'MEDIUM', 'HARD'];
     const currentIndex = difficulties.indexOf(progress.currentDifficulty);
     const reviewLevel = currentIndex > 0 ? difficulties[currentIndex - 1] : progress.currentDifficulty;
     console.log('   → Returning:', reviewLevel);

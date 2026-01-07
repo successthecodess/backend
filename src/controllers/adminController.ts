@@ -380,7 +380,7 @@ export const bulkUploadQuestions = asyncHandler(async (req: Request, res: Respon
 
           // Validate difficulty
           const difficulty = row['Difficulty']?.toUpperCase() || 'MEDIUM';
-          const validDifficulties = ['EASY', 'MEDIUM', 'HARD', 'EXPERT'];
+          const validDifficulties = ['EASY', 'MEDIUM', 'HARD'];
           if (!validDifficulties.includes(difficulty)) {
             throw new Error(`Invalid difficulty: ${row['Difficulty']}. Must be one of: ${validDifficulties.join(', ')}`);
           }

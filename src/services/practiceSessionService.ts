@@ -135,7 +135,7 @@ export class PracticeSessionService {
       if (!question) {
         // If no questions at student's level, try nearby difficulties
         console.log(`⚠️ No ${studentLevel} questions, trying alternatives...`);
-        const difficulties = ['EASY', 'MEDIUM', 'HARD', 'EXPERT'];
+        const difficulties = ['EASY', 'MEDIUM', 'HARD'];
         const currentIndex = difficulties.indexOf(studentLevel);
         
         // Try one level down first, then one level up
@@ -303,7 +303,7 @@ export class PracticeSessionService {
         console.log(`\n⚠️ No ${studentLevel} questions available (${answeredQuestionIds.length} excluded)`);
         console.log('Trying fallback...\n');
         
-        const difficulties = ['EASY', 'MEDIUM', 'HARD', 'EXPERT'];
+        const difficulties = ['EASY', 'MEDIUM', 'HARD'];
         const currentIndex = difficulties.indexOf(studentLevel);
         
         // Try closest difficulties first
