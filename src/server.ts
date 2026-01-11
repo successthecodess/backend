@@ -13,7 +13,8 @@ import analyticsRoutes from './routes/analyticsRoutes.js';
 import settingsRoutes from './routes/settingsRoutes.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import freeTrialRoutes from './routes/freeTrialRoutes.js';
-
+import adminExamBankRoutes from './routes/adminExamBankRoutes.js';
+import fullExamRoutes from './routes/fullExamRoutes.js';
 dotenv.config();
 
 const app = express();
@@ -34,8 +35,8 @@ app.use('/api/analytics', analyticsRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/free-trial', freeTrialRoutes);
-
-
+app.use('/api/admin/exam-bank', adminExamBankRoutes);
+app.use('/api/full-exam', fullExamRoutes);
 // Error handler
 app.use(errorHandler);
 

@@ -6,7 +6,9 @@ import { initRateLimiter, authRateLimiter, createApiRateLimiter } from './middle
 import { startCleanupScheduler } from './jobs/cleanup.js';
 import authRoutes from './routes/authRoutes.js';
 import adminRoutes from './routes/adminRoutes.js';
-// ... other imports
+import insightsRoutes from './routes/insightsRoutes.js';
+import practiceRoutes from './routes/practiceRoutes.js';
+import questionRoutes from './routes/questionRoutes.js';
 
 const app = express();
 
@@ -38,10 +40,35 @@ async function startServer() {
     app.use('/api/auth/oauth/login', authRateLimiter);
     app.use('/api', createApiRateLimiter(100, 60));
 
-    // Routes
+    // Routes - SPECIFIC routes BEFORE general routes!
+   
     app.use('/api/auth', authRoutes);
-    app.use('/api/admin', adminRoutes);
-    // ... other routes
+    app.use('/api/admin', adminRoutes); 
+    app.use('/api/insights', insightsRoutes);
+    app.use('/api/practice', practiceRoutes);
+    app.use('/api/question', questionRoutes);
+
+    // Debug logging
+    console.log('\n🔍 Registered Routes:');
+    app._router.stack.forEach((middleware: any) => {
+      if (middleware.route) {
+        const methods = Object.keys(middleware.route.methods).join(',').toUpperCase();
+        console.log(`  ${methods} ${middleware.route.path}`);
+      } else if (middleware.name === 'router' && middleware.regexp) {
+        const pathRegex = middleware.regexp.toString();
+        console.log(`  Router: ${pathRegex}`);
+        
+        if (middleware.handle && middleware.handle.stack) {
+          middleware.handle.stack.forEach((handler: any) => {
+            if (handler.route) {
+              const methods = Object.keys(handler.route.methods).join(',').toUpperCase();
+              console.log(`    ${methods} ${handler.route.path}`);
+            }
+          });
+        }
+      }
+    });
+    console.log('\n');
 
     // Start server
     const PORT = process.env.PORT || 5000;
@@ -58,7 +85,6 @@ async function startServer() {
 // Handle graceful shutdown
 process.on('SIGTERM', async () => {
   console.log('SIGTERM received, shutting down gracefully...');
-  // Close Redis, database connections, etc.
   process.exit(0);
 });
 

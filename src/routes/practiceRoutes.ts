@@ -11,6 +11,6 @@ router.use(authenticate);
 router.post('/start', startPracticeSession);
 router.post('/next', getNextQuestion);
 router.post('/submit', submitAnswer);
-router.post('/end/:sessionId', endPracticeSession);  // Make sure this exists
+router.post('/end/:sessionId', endPracticeSession);  
 
 export default router;

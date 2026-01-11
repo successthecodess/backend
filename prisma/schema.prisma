@@ -64,6 +64,7 @@ model User {
   name              String?
   password          String?
   refreshTokens   RefreshToken[]  
+  fullExamAttempts    FullExamAttempt[]
   auditLogs       AuditLog[] 
   hasUsedFreeTrial Boolean @default(false)
   freeTrialCompletedAt DateTime?
@@ -564,3 +565,187 @@ model CourseAccess {
   @@map("course_access")
 }
 
+// Exam Bank Question - Supports multi-part FRQs
+model ExamBankQuestion {
+  id            String            @id @default(cuid())
+  unitId        String
+  unit          ExamUnit          @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  
+  questionType  ExamQuestionType
+  frqType       FRQType?          // For FRQ questions
+  
+  // Display fields
+  questionText  String            @db.Text  // Summary/title
+  
+  // MCQ fields
+  options       Json?             // Array of 4 strings for MCQ
+  correctAnswer String?           // "A", "B", "C", or "D"
+  
+  // FRQ fields - Multi-part structure
+  promptText    String?           @db.Text  // Main scenario/context
+  starterCode   String?           @db.Text  // Class information/structure
+  frqParts      Json?             // Array of { partLetter, promptText, starterCode, rubricPoints, maxPoints, sampleSolution }
+  maxPoints     Int               @default(9) // Total points
+  
+  explanation   String?           @db.Text
+  difficulty    ExamDifficulty    @default(MEDIUM)
+  approved      Boolean           @default(false)
+  aiGenerated   Boolean           @default(false)
+  isActive      Boolean           @default(true)
+  
+  timesUsed     Int               @default(0)
+  averageScore  Float?
+  
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+  
+  // Relations
+  mcqAttempts   ExamAttemptMCQ[]
+  frqAttempts   ExamAttemptFRQ[]
+  
+  @@index([unitId])
+  @@index([questionType])
+  @@index([frqType])
+  @@index([approved])
+}
+
+// FRQ Attempt with multi-part support
+model ExamAttemptFRQ {
+  id                String           @id @default(cuid())
+  examAttemptId     String
+  examAttempt       FullExamAttempt  @relation(fields: [examAttemptId], references: [id], onDelete: Cascade)
+  questionId        String
+  question          ExamBankQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  frqNumber         Int              // 1-4
+  
+  // Student responses
+  userCode          String?          @db.Text // Combined code for all parts
+  partResponses     Json?            // Array of { partLetter, userCode, timeSpent }
+  
+  // AI Evaluation
+  aiEvaluated       Boolean          @default(false)
+  aiEvaluationResult Json?           // Full evaluation with part breakdowns
+  aiComments        String?          @db.Text
+  
+  // Manual Override
+  manualScore       Float?
+  manualComments    String?          @db.Text
+  reviewedBy        String?
+  reviewedAt        DateTime?
+  
+  finalScore        Float?           // AI or manual score
+  timeSpent         Int?             // Total time in seconds
+  
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+  
+  @@unique([examAttemptId, frqNumber])
+  @@index([questionId])
+}
+// New 4-unit structure for 2025 AP CS A
+model ExamUnit {
+  id              String              @id @default(cuid())
+  unitNumber      Int                 @unique // 1-4
+  name            String
+  description     String?
+  examWeight      String              // e.g., "15-25%"
+  topics          String[]            // Key topics covered
+  
+  questions       ExamBankQuestion[]
+  
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+  isActive        Boolean             @default(true)
+  
+  @@index([unitNumber])
+  @@map("exam_units")
+}
+
+// Full exam attempt (different from practice sessions)
+model FullExamAttempt {
+  id                  String              @id @default(cuid())
+  userId              String
+  user                User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Exam session data
+  startedAt           DateTime            @default(now())
+  submittedAt         DateTime?
+  status              FullExamStatus      @default(IN_PROGRESS)
+  totalTimeSpent      Int?                // In seconds
+  
+  // MCQ responses (42 questions)
+  mcqResponses        ExamAttemptMCQ[]
+  mcqScore            Int?                // Out of 42
+  mcqPercentage       Float?
+  
+  // FRQ responses (4 questions)
+  frqResponses        ExamAttemptFRQ[]
+  frqTotalScore       Float?              // Out of 36 (9 points each)
+  frqPercentage       Float?
+  
+  // Final scores
+  rawScore            Float?              // MCQ (55%) + FRQ (45%)
+  percentageScore     Float?              // 0-100%
+  predictedAPScore    Int?                // 1-5
+  
+  // Performance breakdown
+  unitBreakdown       Json?               // Performance by unit
+  strengths           String[]
+  weaknesses          String[]
+  recommendations     Json?
+  
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+  
+  @@index([userId, status])
+  @@index([predictedAPScore])
+  @@map("full_exam_attempts")
+}
+
+// MCQ response for full exam
+model ExamAttemptMCQ {
+  id                  String              @id @default(cuid())
+  examAttemptId       String
+  examAttempt         FullExamAttempt     @relation(fields: [examAttemptId], references: [id], onDelete: Cascade)
+  
+  questionId          String
+  question            ExamBankQuestion    @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  
+  orderIndex          Int                 // 1-42
+  userAnswer          String?             // "A", "B", "C", or "D"
+  isCorrect           Boolean?
+  timeSpent           Int?                // In seconds
+  
+  flaggedForReview    Boolean             @default(false)
+  
+  createdAt           DateTime            @default(now())
+  
+  @@unique([examAttemptId, orderIndex])
+  @@index([examAttemptId])
+  @@map("exam_attempt_mcqs")
+}
+
+enum ExamQuestionType {
+  MCQ
+  FRQ
+}
+
+enum FRQType {
+  METHODS_CONTROL     // Question 1: Methods and Control Structures
+  CLASSES             // Question 2: Classes
+  ARRAYLIST           // Question 3: Data Analysis with ArrayList
+  TWO_D_ARRAY         // Question 4: 2D Array
+}
+
+enum ExamDifficulty {
+  EASY
+  MEDIUM
+  HARD
+}
+
+enum FullExamStatus {
+  IN_PROGRESS
+  SUBMITTED
+  GRADED
+  ABANDONED
+}

@@ -10,6 +10,8 @@ interface Secrets {
   GHL_CLIENT_SECRET: string;
   DATABASE_URL: string;
   ENCRYPTION_KEY: string;
+  OPENAI_API_KEY: string;
+
 }
 
 let cachedSecrets: Secrets | null = null;
@@ -42,6 +44,7 @@ export async function getSecrets(): Promise<Secrets> {
       GHL_CLIENT_SECRET: process.env.GHL_CLIENT_SECRET || '',
       DATABASE_URL: process.env.DATABASE_URL,
       ENCRYPTION_KEY: process.env.ENCRYPTION_KEY || '',
+      OPENAI_API_KEY: process.env.OPENAI_API_KEY || ''
     };
     
     console.log('✅ Secrets loaded from environment variables');
