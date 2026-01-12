@@ -27,6 +27,149 @@ interface PartEvaluation {
 
 export class FRQEvaluationService {
   /**
+   * Evaluate a single FRQ question (called by fullExamService in parallel)
+   */
+  async evaluateFRQ(
+    frqResponse: any,
+    userCode: string,
+    question: any,
+    partResponses?: any[]
+  ) {
+    console.log(`🤖 Evaluating FRQ ${frqResponse.frqNumber}...`);
+
+    try {
+      // Parse parts from stored frqParts JSON
+      const parts = (question.frqParts as any[]) || [];
+
+      if (!userCode || userCode.trim() === '') {
+        console.log('⚠️ No code submitted, awarding 0 points');
+        
+        return {
+          totalScore: 0,
+          maxScore: question.maxPoints,
+          rubricScores: [],
+          penalties: [],
+          generalFeedback: 'No code submitted',
+          strengths: [],
+          improvements: ['Submit a solution to earn points'],
+        };
+      }
+
+      // If no parts, evaluate as single question
+      if (parts.length === 0) {
+        return await this.evaluateSingleFRQ(userCode, question);
+      }
+
+      // Evaluate each part separately
+      let totalScore = 0;
+      const allRubricScores: any[] = [];
+      const allPenalties: any[] = [];
+      const allStrengths: string[] = [];
+      const allImprovements: string[] = [];
+      const partEvaluations: any[] = [];
+
+      for (let i = 0; i < parts.length; i++) {
+        const part = parts[i];
+        const partResponse = partResponses?.find((pr: any) => pr.partLetter === part.partLetter);
+        const partCode = partResponse?.userCode || '';
+
+        if (partCode.trim() === '') {
+          const emptyPartEval = {
+            partLetter: part.partLetter,
+            score: 0,
+            maxScore: part.maxPoints,
+            rubricScores: [],
+            penalties: [],
+            generalFeedback: 'No code submitted',
+            strengths: [],
+            improvements: ['Submit a solution to earn points'],
+          };
+          
+          partEvaluations.push(emptyPartEval);
+          allRubricScores.push({
+            criterion: `Part ${part.partLetter}`,
+            earned: 0,
+            possible: part.maxPoints,
+            feedback: 'No code submitted',
+          });
+          continue;
+        }
+
+        // Evaluate this part with OpenAI
+        const evaluation = await this.evaluatePart(partCode, {
+          prompt: part.promptText,
+          methodSignature: part.starterCode || '',
+          sampleSolution: part.sampleSolution || '',
+          rubric: part.rubricPoints,
+          maxPoints: part.maxPoints,
+          partLabel: `Part (${part.partLetter})`,
+        });
+
+        totalScore += evaluation.score;
+        partEvaluations.push({
+          partLetter: part.partLetter,
+          ...evaluation,
+        });
+
+        // Aggregate rubric scores
+        evaluation.rubricScores.forEach(rs => {
+          allRubricScores.push({
+            ...rs,
+            criterion: `Part ${part.partLetter}: ${rs.criterion}`,
+          });
+        });
+
+        // Aggregate penalties
+        allPenalties.push(...evaluation.penalties);
+
+        // Aggregate strengths and improvements
+        allStrengths.push(...evaluation.strengths);
+        allImprovements.push(...evaluation.improvements);
+      }
+
+      const generalFeedback = this.formatMultiPartCommentsFromArray(partEvaluations);
+
+      return {
+        totalScore,
+        maxScore: question.maxPoints,
+        rubricScores: allRubricScores,
+        penalties: allPenalties,
+        generalFeedback,
+        strengths: allStrengths,
+        improvements: allImprovements,
+        parts: partEvaluations,
+      };
+    } catch (error) {
+      console.error(`❌ Error evaluating FRQ:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Evaluate single-part FRQ
+   */
+  async evaluateSingleFRQ(userCode: string, question: any) {
+    const evaluation = await this.evaluatePart(userCode, {
+      prompt: question.promptText || question.questionText,
+      methodSignature: question.starterCode || '',
+      sampleSolution: question.explanation || '',
+      rubric: null,
+      maxPoints: question.maxPoints,
+      partLabel: `Question`,
+    });
+
+    return {
+      totalScore: evaluation.score,
+      maxScore: evaluation.maxScore,
+      rubricScores: evaluation.rubricScores,
+      penalties: evaluation.penalties,
+      generalFeedback: evaluation.generalFeedback,
+      strengths: evaluation.strengths,
+      improvements: evaluation.improvements,
+    };
+  }
+
+  /**
    * Evaluate a single part of an FRQ
    */
   async evaluatePart(
@@ -73,7 +216,17 @@ export class FRQEvaluationService {
       return evaluation;
     } catch (error) {
       console.error(`❌ Error evaluating ${partConfig.partLabel}:`, error);
-      throw error;
+      
+      // Return default evaluation on error
+      return {
+        score: 0,
+        maxScore: partConfig.maxPoints,
+        rubricScores: [],
+        penalties: [],
+        generalFeedback: 'Evaluation failed. Please review manually.',
+        strengths: [],
+        improvements: ['Could not evaluate this response automatically.'],
+      };
     }
   }
 
@@ -145,6 +298,14 @@ Return your evaluation as a JSON object with this exact structure:
       partLabel: string;
     }
   ): string {
+    const rubricSection = partConfig.rubric 
+      ? `## Scoring Rubric (${partConfig.maxPoints} points total)\n${JSON.stringify(partConfig.rubric, null, 2)}`
+      : `## Scoring Criteria (${partConfig.maxPoints} points total)\n- Correct logic and implementation\n- Proper Java syntax\n- Handles edge cases appropriately`;
+
+    const sampleSection = partConfig.sampleSolution 
+      ? `## Sample Solution (for reference)\n\`\`\`java\n${partConfig.sampleSolution}\n\`\`\``
+      : '';
+
     return `# AP Computer Science A FRQ - ${partConfig.partLabel} Evaluation
 
 ## ${partConfig.partLabel} Instructions
@@ -152,7 +313,7 @@ ${partConfig.prompt}
 
 ## Method Signature
 \`\`\`java
-${partConfig.methodSignature}
+${partConfig.methodSignature || 'See instructions above'}
 \`\`\`
 
 ## Student's Code Submission
@@ -160,13 +321,9 @@ ${partConfig.methodSignature}
 ${studentCode}
 \`\`\`
 
-## Sample Solution (for reference)
-\`\`\`java
-${partConfig.sampleSolution}
-\`\`\`
+${sampleSection}
 
-## Scoring Rubric (${partConfig.maxPoints} points total)
-${JSON.stringify(partConfig.rubric, null, 2)}
+${rubricSection}
 
 ## Instructions
 Evaluate the student's code according to the rubric above. For each criterion:
@@ -184,143 +341,6 @@ Provide:
 - Areas for improvement
 
 Remember: Apply the "No Penalty" list to avoid over-penalizing minor syntax issues.`;
-  }
-
-  /**
-   * Evaluate all 4 FRQs for an exam attempt
-   */
-  async evaluateAllFRQs(examAttemptId: string) {
-    console.log('🤖 Evaluating all FRQs for exam:', examAttemptId);
-
-    const examAttempt = await prisma.fullExamAttempt.findUnique({
-      where: { id: examAttemptId },
-      include: {
-        frqResponses: {
-          include: {
-            question: true,
-          },
-          orderBy: { frqNumber: 'asc' },
-        },
-      },
-    });
-
-    if (!examAttempt) {
-      throw new AppError('Exam attempt not found', 404);
-    }
-
-    let totalFRQScore = 0;
-    const evaluations: any[] = [];
-
-    // Evaluate each FRQ
-    for (const frqResponse of examAttempt.frqResponses) {
-      console.log(`\n📝 Evaluating FRQ ${frqResponse.frqNumber}...`);
-
-      // Parse parts from stored frqParts JSON
-      const parts = (frqResponse.question.frqParts as any[]) || [];
-      const partResponses = (frqResponse.partResponses as any[]) || [];
-
-      if (!frqResponse.userCode || frqResponse.userCode.trim() === '') {
-        console.log('⚠️ No code submitted, awarding 0 points');
-        
-        await prisma.examAttemptFRQ.update({
-          where: { id: frqResponse.id },
-          data: {
-            aiEvaluated: true,
-            finalScore: 0,
-            aiComments: 'No code submitted',
-          },
-        });
-
-        evaluations.push({
-          totalScore: 0,
-          maxScore: frqResponse.question.maxPoints,
-        });
-
-        continue;
-      }
-
-      // Evaluate each part separately
-      let totalScore = 0;
-      const partEvaluations: any[] = [];
-
-      for (let i = 0; i < parts.length; i++) {
-        const part = parts[i];
-        const partResponse = partResponses.find((pr: any) => pr.partLetter === part.partLetter);
-        const partCode = partResponse?.userCode || '';
-
-        if (partCode.trim() === '') {
-          partEvaluations.push({
-            partLetter: part.partLetter,
-            score: 0,
-            maxScore: part.maxPoints,
-            rubricScores: [],
-            penalties: [],
-            generalFeedback: 'No code submitted',
-            strengths: [],
-            improvements: ['Submit a solution to earn points'],
-          });
-          continue;
-        }
-
-        // Evaluate this part with OpenAI
-        const evaluation = await this.evaluatePart(partCode, {
-          prompt: part.promptText,
-          methodSignature: part.starterCode || '',
-          sampleSolution: part.sampleSolution,
-          rubric: part.rubricPoints,
-          maxPoints: part.maxPoints,
-          partLabel: `Part (${part.partLetter})`,
-        });
-
-        totalScore += evaluation.score;
-        partEvaluations.push({
-          partLetter: part.partLetter,
-          ...evaluation,
-        });
-      }
-
-      // Save evaluation
-      await prisma.examAttemptFRQ.update({
-        where: { id: frqResponse.id },
-        data: {
-          aiEvaluated: true,
-          aiEvaluationResult: { parts: partEvaluations } as any,
-          finalScore: totalScore,
-          aiComments: this.formatMultiPartCommentsFromArray(partEvaluations),
-        },
-      });
-
-      totalFRQScore += totalScore;
-      evaluations.push({
-        totalScore,
-        maxScore: frqResponse.question.maxPoints,
-        parts: partEvaluations,
-      });
-    }
-
-    const frqMaxScore = examAttempt.frqResponses.reduce(
-      (sum, frq) => sum + frq.question.maxPoints,
-      0
-    );
-    const frqPercentage = frqMaxScore > 0 ? (totalFRQScore / frqMaxScore) * 100 : 0;
-
-    console.log(`\n✅ All FRQs evaluated`);
-    console.log(`📊 Total FRQ Score: ${totalFRQScore}/${frqMaxScore} (${frqPercentage.toFixed(1)}%)`);
-
-    await prisma.fullExamAttempt.update({
-      where: { id: examAttemptId },
-      data: {
-        frqTotalScore: totalFRQScore,
-        frqPercentage: frqPercentage,
-      },
-    });
-
-    return {
-      frqTotalScore: totalFRQScore,
-      frqMaxScore: frqMaxScore,
-      frqPercentage: frqPercentage,
-      evaluations: evaluations,
-    };
   }
 
   /**
@@ -364,217 +384,6 @@ Remember: Apply the "No Penalty" list to avoid over-penalizing minor syntax issu
     });
 
     return comments;
-  }
-
-  /**
-   * Calculate final exam score and AP prediction
-   */
-  async calculateFinalScore(examAttemptId: string) {
-    console.log('📊 Calculating final score for exam:', examAttemptId);
-
-    const examAttempt = await prisma.fullExamAttempt.findUnique({
-      where: { id: examAttemptId },
-      include: {
-        mcqResponses: {
-          include: {
-            question: true,
-          },
-        },
-        frqResponses: {
-          include: {
-            question: true,
-          },
-        },
-      },
-    });
-
-    if (!examAttempt) {
-      throw new AppError('Exam attempt not found', 404);
-    }
-
-    // MCQ: 42 questions, 55% of score
-    const mcqScore = examAttempt.mcqScore || 0;
-    const mcqWeighted = (mcqScore / 42) * 55;
-
-    // FRQ: Total points (4 questions × 9 points typically), 45% of score
-    const frqScore = examAttempt.frqTotalScore || 0;
-    const frqMaxScore = examAttempt.frqResponses.reduce(
-      (sum, frq) => sum + frq.question.maxPoints,
-      0
-    );
-    const frqWeighted = frqMaxScore > 0 ? (frqScore / frqMaxScore) * 45 : 0;
-
-    // Total percentage (0-100)
-    const percentageScore = mcqWeighted + frqWeighted;
-
-    // Calculate AP Score (1-5) based on percentage
-    let predictedAPScore: number;
-    if (percentageScore >= 75) predictedAPScore = 5;
-    else if (percentageScore >= 60) predictedAPScore = 4;
-    else if (percentageScore >= 45) predictedAPScore = 3;
-    else if (percentageScore >= 35) predictedAPScore = 2;
-    else predictedAPScore = 1;
-
-    console.log('📊 Final Scores:');
-    console.log(`   MCQ: ${mcqScore}/42 → ${mcqWeighted.toFixed(2)}% (weighted)`);
-    console.log(`   FRQ: ${frqScore}/${frqMaxScore} → ${frqWeighted.toFixed(2)}% (weighted)`);
-    console.log(`   Total: ${percentageScore.toFixed(2)}%`);
-    console.log(`   Predicted AP Score: ${predictedAPScore}`);
-
-    // Calculate performance by unit
-    const unitBreakdown = await this.calculateUnitBreakdown(examAttempt);
-
-    // Identify strengths and weaknesses
-    const { strengths, weaknesses } = this.identifyStrengthsWeaknesses(unitBreakdown);
-
-    // Generate recommendations
-    const recommendations = this.generateRecommendations(
-      percentageScore,
-      predictedAPScore,
-      weaknesses
-    );
-
-    // Update exam attempt with final scores
-    await prisma.fullExamAttempt.update({
-      where: { id: examAttemptId },
-      data: {
-        status: 'GRADED',
-        rawScore: mcqScore + frqScore,
-        percentageScore: percentageScore,
-        predictedAPScore: predictedAPScore,
-        unitBreakdown: unitBreakdown as any,
-        strengths: strengths,
-        weaknesses: weaknesses,
-        recommendations: recommendations as any,
-      },
-    });
-
-    console.log('✅ Final score calculated and saved');
-
-    return {
-      mcqScore: mcqScore,
-      mcqWeighted: mcqWeighted,
-      frqScore: frqScore,
-      frqWeighted: frqWeighted,
-      percentageScore: percentageScore,
-      predictedAPScore: predictedAPScore,
-      unitBreakdown: unitBreakdown,
-      strengths: strengths,
-      weaknesses: weaknesses,
-      recommendations: recommendations,
-    };
-  }
-
-  /**
-   * Calculate performance breakdown by unit
-   */
-  private async calculateUnitBreakdown(examAttempt: any) {
-    const units = await prisma.examUnit.findMany({
-      orderBy: { unitNumber: 'asc' },
-    });
-
-    const breakdown: any = {};
-
-    for (const unit of units) {
-      const unitMCQs = examAttempt.mcqResponses.filter((r: any) => r.question.unitId === unit.id);
-      const unitMCQCorrect = unitMCQs.filter((r: any) => r.isCorrect).length;
-      const unitMCQTotal = unitMCQs.length;
-
-      breakdown[`unit${unit.unitNumber}`] = {
-        unitName: unit.name,
-        mcqCorrect: unitMCQCorrect,
-        mcqTotal: unitMCQTotal,
-        mcqPercentage: unitMCQTotal > 0 ? (unitMCQCorrect / unitMCQTotal) * 100 : 0,
-      };
-    }
-
-    return breakdown;
-  }
-
-  /**
-   * Identify strengths and weaknesses
-   */
-  private identifyStrengthsWeaknesses(unitBreakdown: any) {
-    const strengths: string[] = [];
-    const weaknesses: string[] = [];
-
-    Object.entries(unitBreakdown).forEach(([key, data]: [string, any]) => {
-      if (data.mcqPercentage >= 75) {
-        strengths.push(`${data.unitName} (${data.mcqPercentage.toFixed(0)}% correct)`);
-      } else if (data.mcqPercentage < 60) {
-        weaknesses.push(`${data.unitName} (${data.mcqPercentage.toFixed(0)}% correct)`);
-      }
-    });
-
-    if (strengths.length === 0) {
-      strengths.push('Keep practicing to build stronger foundations');
-    }
-
-    if (weaknesses.length === 0) {
-      weaknesses.push('No significant weaknesses identified');
-    }
-
-    return { strengths, weaknesses };
-  }
-
-  /**
-   * Generate personalized recommendations
-   */
-  private generateRecommendations(
-    percentageScore: number,
-    apScore: number,
-    weaknesses: string[]
-  ) {
-    const recommendations: any = {
-      overall: '',
-      studyFocus: [],
-      nextSteps: [],
-    };
-
-    if (apScore >= 4) {
-      recommendations.overall = 'Excellent work! You\'re well-prepared for the AP exam.';
-    } else if (apScore === 3) {
-      recommendations.overall = 'Good foundation. Focus on strengthening weak areas to reach a 4 or 5.';
-    } else {
-      recommendations.overall = 'Keep practicing! Focus on building fundamentals in weak areas.';
-    }
-
-    weaknesses.forEach(weakness => {
-      if (weakness.includes('Unit 1')) {
-        recommendations.studyFocus.push('Review objects, methods, and Java fundamentals');
-      } else if (weakness.includes('Unit 2')) {
-        recommendations.studyFocus.push('Practice loops, conditionals, and algorithm design');
-      } else if (weakness.includes('Unit 3')) {
-        recommendations.studyFocus.push('Work on class design, constructors, and encapsulation');
-      } else if (weakness.includes('Unit 4')) {
-        recommendations.studyFocus.push('Focus on arrays, ArrayLists, and 2D arrays');
-      }
-    });
-
-    if (percentageScore < 50) {
-      recommendations.nextSteps = [
-        'Take more practice tests to identify specific weak topics',
-        'Review course materials for units with low scores',
-        'Practice FRQ questions with a focus on proper syntax',
-        'Work through code tracing exercises',
-      ];
-    } else if (percentageScore < 75) {
-      recommendations.nextSteps = [
-        'Continue practicing FRQs to improve coding skills',
-        'Review common algorithm patterns',
-        'Take timed practice tests to improve speed',
-        'Study official AP exam rubrics',
-      ];
-    } else {
-      recommendations.nextSteps = [
-        'Take full-length practice exams under timed conditions',
-        'Review FRQ rubrics to maximize points',
-        'Practice explaining your code clearly',
-        'Stay confident and maintain your preparation',
-      ];
-    }
-
-    return recommendations;
   }
 }
 

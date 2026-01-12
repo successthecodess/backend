@@ -1,9 +1,7 @@
 import { Request, Response } from 'express';
 import fullExamService from '../services/fullExamService.js';
 import { AppError, asyncHandler } from '../middleware/errorHandler.js';
-import frqEvaluationService from '../services/frqEvaluationService.js';
 import prisma from '../config/database.js';
-
 // Start full exam
 export const startFullExam = asyncHandler(async (req: Request, res: Response) => {
   const { userId } = req.body;
@@ -37,29 +35,17 @@ export const submitMCQAnswer = asyncHandler(async (req: Request, res: Response) 
 export const submitFRQAnswer = asyncHandler(async (req: Request, res: Response) => {
   const { examAttemptId, frqNumber, userCode, partResponses, timeSpent } = req.body;
 
-  const frqResponse = await prisma.examAttemptFRQ.findFirst({
-    where: {
-      examAttemptId,
-      frqNumber,
-    },
-  });
-
-  if (!frqResponse) {
-    throw new AppError('FRQ response not found', 404);
-  }
-
-  const updated = await prisma.examAttemptFRQ.update({
-    where: { id: frqResponse.id },
-    data: {
-      userCode,
-      partResponses, // Store part-by-part responses
-      timeSpent,
-    },
-  });
+  const result = await fullExamService.submitFRQAnswer(
+    examAttemptId,
+    frqNumber,
+    userCode,
+    partResponses,
+    timeSpent
+  );
 
   res.status(200).json({
     status: 'success',
-    data: { saved: true, frqNumber, timeSpent },
+    data: result,
   });
 });
 
@@ -91,22 +77,7 @@ export const flagMCQForReview = asyncHandler(async (req: Request, res: Response)
 export const submitFullExam = asyncHandler(async (req: Request, res: Response) => {
   const { examAttemptId, totalTimeSpent } = req.body;
 
-  // Submit exam (calculates MCQ score)
   const submitResult = await fullExamService.submitExam(examAttemptId, totalTimeSpent);
-
-  // Trigger FRQ evaluation asynchronously
-  // This happens in the background while we respond to the user
-  frqEvaluationService.evaluateAllFRQs(examAttemptId)
-    .then(async (frqResults) => {
-      console.log('✅ FRQ evaluation complete');
-      
-      // Calculate final score
-      await frqEvaluationService.calculateFinalScore(examAttemptId);
-      console.log('✅ Final score calculated');
-    })
-    .catch(error => {
-      console.error('❌ Error in FRQ evaluation:', error);
-    });
 
   res.status(200).json({
     status: 'success',
@@ -114,45 +85,70 @@ export const submitFullExam = asyncHandler(async (req: Request, res: Response) =
   });
 });
 
-// Get exam results (new endpoint)
+// Get exam results with FRQ solutions
 export const getExamResults = asyncHandler(async (req: Request, res: Response) => {
   const { examAttemptId } = req.params;
 
   const examAttempt = await fullExamService.getExamAttempt(examAttemptId);
 
-  // Check if grading is complete
   if (examAttempt.status !== 'GRADED') {
     return res.status(200).json({
       status: 'success',
       data: {
         status: examAttempt.status,
-        message: 'Grading in progress...',
-        mcqScore: examAttempt.mcqScore,
-        mcqPercentage: examAttempt.mcqPercentage,
+        message: 'Exam not yet submitted',
       },
     });
   }
 
-  // Return full results
+  // Calculate estimated AP score ranges
+  const apScoreRanges = fullExamService.calculateEstimatedAPRange(examAttempt.mcqScore || 0);
+
+  // Parse JSON fields
+  const unitBreakdown = examAttempt.unitBreakdown 
+    ? (typeof examAttempt.unitBreakdown === 'string' 
+        ? JSON.parse(examAttempt.unitBreakdown) 
+        : examAttempt.unitBreakdown)
+    : null;
+
+  const recommendations = examAttempt.recommendations 
+    ? (typeof examAttempt.recommendations === 'string' 
+        ? JSON.parse(examAttempt.recommendations) 
+        : examAttempt.recommendations)
+    : null;
+
+  // Include FRQ details with solutions and rubrics
+  const frqDetails = examAttempt.frqResponses.map((frq: any) => ({
+    frqNumber: frq.frqNumber,
+    userCode: frq.userCode,
+    partResponses: frq.partResponses,
+    timeSpent: frq.timeSpent,
+    // Include the solutions and rubrics
+    question: {
+      questionText: frq.question.questionText,
+      promptText: frq.question.promptText,
+      starterCode: frq.question.starterCode,
+      frqParts: frq.question.frqParts,
+      maxPoints: frq.question.maxPoints,
+      explanation: frq.question.explanation,
+    },
+  }));
+
   res.status(200).json({
     status: 'success',
     data: {
-      examAttempt,
+      status: examAttempt.status,
       mcqScore: examAttempt.mcqScore,
-      frqTotalScore: examAttempt.frqTotalScore,
-      percentageScore: examAttempt.percentageScore,
-      predictedAPScore: examAttempt.predictedAPScore,
-      unitBreakdown: examAttempt.unitBreakdown,
+      mcqPercentage: examAttempt.mcqPercentage,
+      mcqTotal: 42,
+      apScoreRanges, // Show what they could get with different FRQ performance
+      unitBreakdown,
       strengths: examAttempt.strengths,
       weaknesses: examAttempt.weaknesses,
-      recommendations: examAttempt.recommendations,
-      frqDetails: examAttempt.frqResponses.map(frq => ({
-        frqNumber: frq.frqNumber,
-        score: frq.finalScore,
-        maxScore: frq.question.maxPoints,
-        evaluation: frq.aiEvaluationResult,
-        comments: frq.aiComments,
-      })),
+      recommendations,
+      frqDetails, // Include solutions and rubrics
+      submittedAt: examAttempt.submittedAt,
+      totalTimeSpent: examAttempt.totalTimeSpent,
     },
   });
 });
