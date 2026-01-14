@@ -2,7 +2,7 @@ import { Router } from 'express';
 import axios from 'axios';
 import jwt from 'jsonwebtoken';
 import prisma from '../config/database.js';
-
+import { checkUserAccess } from '../middleware/accessControl.js';
 const router = Router();
 
 const GHL_AUTH_URL = 'https://marketplace.gohighlevel.com/oauth/chooselocation';
@@ -1112,7 +1112,451 @@ router.post('/oauth/student/signup', async (req, res) => {
     });
   }
 });
+import bcrypt from 'bcryptjs';
 
+// Add to your existing authRoutes.ts
+
+/**
+ * Set password for existing account (first-time setup)
+ */
+router.post('/oauth/student/set-password', async (req, res) => {
+  const { email, password, token } = req.body;
+
+  if (!password || password.length < 8) {
+    return res.status(400).json({ 
+      error: 'Password must be at least 8 characters long' 
+    });
+  }
+
+  try {
+    // Verify token if provided (from email link)
+    let userEmail = email;
+    
+    if (token) {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET!) as any;
+      userEmail = decoded.email;
+    }
+
+    // Hash password
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // Update user
+    const user = await prisma.user.update({
+      where: { email: userEmail },
+      data: { 
+        password: hashedPassword,
+        passwordSetAt: new Date(),
+      },
+    });
+
+    console.log('✅ Password set for user:', userEmail);
+
+    res.json({
+      success: true,
+      message: 'Password set successfully. You can now login with your password.',
+    });
+  } catch (error: any) {
+    console.error('Failed to set password:', error);
+    res.status(500).json({ error: 'Failed to set password' });
+  }
+});
+// In authRoutes.ts
+router.get('/oauth/my-access', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    
+    if (!authHeader) {
+      return res.status(401).json({ error: 'No token provided' });
+    }
+
+    const token = authHeader.substring(7);
+    const decoded = jwt.verify(token, process.env.JWT_SECRET!) as { userId: string };
+
+    const access = await checkUserAccess(decoded.userId);
+
+    res.json(access);
+  } catch (error) {
+    res.status(401).json({ error: 'Invalid token' });
+  }
+});
+
+/**
+ * Login with email + password
+ */
+router.post('/oauth/student/login-with-password', async (req, res) => {
+  const { email, password } = req.body;
+
+  if (!email || !password) {
+    return res.status(400).json({ error: 'Email and password are required' });
+  }
+
+  try {
+    // Find user
+    const user = await prisma.user.findUnique({
+      where: { email: email.toLowerCase() },
+    });
+
+    if (!user) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+
+    // Check if password is set
+    if (!user.password) {
+      return res.status(400).json({ 
+        error: 'Password not set. Please use the "Login with Email" option first.',
+        needsPasswordSetup: true,
+      });
+    }
+
+    // Verify password
+    const isValidPassword = await bcrypt.compare(password, user.password);
+
+    if (!isValidPassword) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+
+    // Check admin access
+    await checkAndGrantAdminAccess(user.email, user.id);
+
+    // Fetch updated user
+    const updatedUser = await prisma.user.findUnique({
+      where: { id: user.id },
+    });
+
+    // Generate token
+    const token = jwt.sign(
+      {
+        userId: updatedUser!.id,
+        email: updatedUser!.email,
+        name: updatedUser!.name,
+        isAdmin: updatedUser!.isAdmin,
+        role: updatedUser!.role,
+      },
+      process.env.JWT_SECRET!,
+      { expiresIn: '30d' }
+    );
+
+    // Update last active
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { lastActive: new Date() },
+    });
+
+    res.json({
+      success: true,
+      token,
+      user: {
+        id: updatedUser!.id,
+        email: updatedUser!.email,
+        name: updatedUser!.name,
+        isAdmin: updatedUser!.isAdmin,
+        role: updatedUser!.role,
+      },
+    });
+  } catch (error: any) {
+    console.error('Login failed:', error);
+    res.status(500).json({ error: 'Login failed. Please try again.' });
+  }
+});
+/**
+ * Admin login with email + password
+ */
+router.post('/oauth/admin/login', async (req, res) => {
+  const { email, password } = req.body;
+
+  if (!email || !password) {
+    return res.status(400).json({ error: 'Email and password are required' });
+  }
+
+  try {
+    console.log('👨‍💼 ========== ADMIN LOGIN ATTEMPT ==========');
+    console.log('   Email:', email);
+
+    // Check if email is in admin list
+    const adminEmail = await prisma.adminEmail.findUnique({
+      where: { email: email.toLowerCase() },
+    });
+
+    if (!adminEmail || !adminEmail.isActive) {
+      console.log('❌ Not an authorized admin email');
+      return res.status(401).json({ error: 'Invalid admin credentials' });
+    }
+
+    // Find or create admin user
+    let user = await prisma.user.findUnique({
+      where: { email: email.toLowerCase() },
+    });
+
+    if (!user) {
+      // First time admin login - create account
+      console.log('📝 Creating new admin account');
+      
+      const hashedPassword = await bcrypt.hash(password, 10);
+      
+      user = await prisma.user.create({
+        data: {
+          email: email.toLowerCase(),
+          name:  email.split('@')[0],
+          password: hashedPassword,
+          isAdmin: true,
+          isStaff: true,
+          role: 'ADMIN',
+          hasAccessToQuestionBank: true,
+          hasAccessToTimedPractice: true,
+          hasAccessToAnalytics: true,
+          passwordSetAt: new Date(),
+        },
+      });
+
+      console.log('✅ Admin account created');
+    } else {
+      // Existing user - verify they're admin and check password
+      if (!user.isAdmin) {
+        console.log('❌ User exists but is not admin');
+        return res.status(403).json({ error: 'Access denied' });
+      }
+
+      if (!user.password) {
+        console.log('📝 Admin account exists but no password set');
+        
+        // Set password for existing admin
+        const hashedPassword = await bcrypt.hash(password, 10);
+        
+        user = await prisma.user.update({
+          where: { id: user.id },
+          data: {
+            password: hashedPassword,
+            passwordSetAt: new Date(),
+          },
+        });
+
+        console.log('✅ Password set for existing admin');
+      } else {
+        // Verify password
+        const isValidPassword = await bcrypt.compare(password, user.password);
+
+        if (!isValidPassword) {
+          console.log('❌ Invalid password');
+          return res.status(401).json({ error: 'Invalid admin credentials' });
+        }
+      }
+    }
+
+    // Generate token
+    const token = jwt.sign(
+      {
+        userId: user.id,
+        email: user.email,
+        name: user.name,
+        isAdmin: true,
+        role: 'ADMIN',
+      },
+      process.env.JWT_SECRET!,
+      { expiresIn: '30d' }
+    );
+
+    // Update last active
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { lastActive: new Date() },
+    });
+
+    console.log('✅ ADMIN LOGIN SUCCESSFUL');
+    console.log('==========================================\n');
+
+    res.json({
+      success: true,
+      token,
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        isAdmin: user.isAdmin,
+        role: user.role,
+      },
+    });
+  } catch (error: any) {
+    console.error('❌ ADMIN LOGIN FAILED');
+    console.error('   Error:', error.message);
+    console.error('==========================================\n');
+    res.status(500).json({ error: 'Login failed. Please try again.' });
+  }
+});
+
+/**
+ * Change admin password
+ */
+router.post('/oauth/admin/change-password', async (req, res) => {
+  const { currentPassword, newPassword } = req.body;
+
+  if (!newPassword || newPassword.length < 8) {
+    return res.status(400).json({ 
+      error: 'New password must be at least 8 characters long' 
+    });
+  }
+
+  try {
+    const authHeader = req.headers.authorization;
+    
+    if (!authHeader) {
+      return res.status(401).json({ error: 'No token provided' });
+    }
+
+    const token = authHeader.substring(7);
+    const decoded = jwt.verify(token, process.env.JWT_SECRET!) as { userId: string };
+
+    const user = await prisma.user.findUnique({
+      where: { id: decoded.userId },
+    });
+
+    if (!user || !user.isAdmin) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    // Verify current password if set
+    if (user.password && currentPassword) {
+      const isValidPassword = await bcrypt.compare(currentPassword, user.password);
+      
+      if (!isValidPassword) {
+        return res.status(401).json({ error: 'Current password is incorrect' });
+      }
+    }
+
+    // Hash and set new password
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        password: hashedPassword,
+        passwordSetAt: new Date(),
+      },
+    });
+
+    console.log('✅ Admin password changed:', user.email);
+
+    res.json({
+      success: true,
+      message: 'Password changed successfully',
+    });
+  } catch (error: any) {
+    console.error('Failed to change password:', error);
+    res.status(500).json({ error: 'Failed to change password' });
+  }
+});
+
+router.post('/oauth/admin/request-reset', async (req, res) => {
+  const { email } = req.body;
+
+  if (!email) {
+    return res.status(400).json({ error: 'Email is required' });
+  }
+
+  try {
+    const adminEmail = await prisma.adminEmail.findUnique({
+      where: { email: email.toLowerCase() },
+    });
+
+    if (!adminEmail || !adminEmail.isActive) {
+      return res.json({ 
+        success: true, 
+        message: 'If this email is registered, you will receive reset instructions.' 
+      });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { email: email.toLowerCase() },
+    });
+
+    let resetToken: string | undefined;
+
+    if (user && user.isAdmin) {
+      // Generate reset token (expires in 1 hour)
+      resetToken = jwt.sign(
+        { userId: user.id, email: user.email, type: 'password-reset' },
+        process.env.JWT_SECRET!,
+        { expiresIn: '1h' }
+      );
+
+      console.log('🔐 Password reset token for', email);
+      console.log('Reset link:', `${process.env.FRONTEND_URL}/admin/reset-password?token=${resetToken}`);
+    }
+
+    res.json({ 
+      success: true, 
+      message: 'If this email is registered, you will receive reset instructions.',
+      // In development, return the token
+      ...(process.env.NODE_ENV === 'development' && resetToken && { resetToken }),
+    });
+  } catch (error: any) {
+    console.error('Password reset request failed:', error);
+    res.status(500).json({ error: 'Failed to process request' });
+  }
+});
+
+/**
+ * Reset password with token
+ */
+router.post('/oauth/admin/reset-password', async (req, res) => {
+  const { token, newPassword } = req.body;
+
+  if (!token || !newPassword) {
+    return res.status(400).json({ error: 'Token and new password are required' });
+  }
+
+  if (newPassword.length < 8) {
+    return res.status(400).json({ error: 'Password must be at least 8 characters long' });
+  }
+
+  try {
+    // Verify reset token
+    const decoded = jwt.verify(token, process.env.JWT_SECRET!) as { 
+      userId: string; 
+      email: string; 
+      type: string;
+    };
+
+    if (decoded.type !== 'password-reset') {
+      return res.status(400).json({ error: 'Invalid reset token' });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: decoded.userId },
+    });
+
+    if (!user || !user.isAdmin) {
+      return res.status(403).json({ error: 'Invalid reset token' });
+    }
+
+    // Hash and set new password
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        password: hashedPassword,
+        passwordSetAt: new Date(),
+        // Clear reset token fields
+        // passwordResetToken: null,
+        // passwordResetExpiry: null,
+      },
+    });
+
+    console.log('✅ Admin password reset:', user.email);
+
+    res.json({
+      success: true,
+      message: 'Password reset successfully. You can now login.',
+    });
+  } catch (error: any) {
+    if (error.name === 'TokenExpiredError') {
+      return res.status(400).json({ error: 'Reset token has expired. Please request a new one.' });
+    }
+    
+    console.error('Password reset failed:', error);
+    res.status(500).json({ error: 'Failed to reset password' });
+  }
+});
 // ==========================================
 // PROGRESS SYNC
 // ==========================================
