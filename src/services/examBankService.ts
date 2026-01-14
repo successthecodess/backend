@@ -4,6 +4,114 @@ import { AppError } from '../middleware/errorHandler.js';
 
 export class ExamBankService {
   /**
+   * Get 42 random MCQ questions for exam (distributed across units)
+   * Questions are randomly selected each time for unlimited practice
+   */
+  async getRandomMCQForExam(): Promise<any[]> {
+    console.log('🎲 Selecting 42 random MCQ questions...');
+
+    // Get all units
+    const units = await prisma.examUnit.findMany({
+      orderBy: { unitNumber: 'asc' },
+    });
+
+    // Distribution based on AP exam weight (approximate)
+    // Unit 1: 15-25% → ~9 questions (21%)
+    // Unit 2: 25-35% → ~13 questions (31%)
+    // Unit 3: 10-18% → ~6 questions (14%)
+    // Unit 4: 30-40% → ~14 questions (33%)
+    const distribution: Record<number, number> = {
+      1: 9,
+      2: 13,
+      3: 6,
+      4: 14,
+    };
+
+    const selectedQuestions: any[] = [];
+
+    for (const unit of units) {
+      const count = distribution[unit.unitNumber] || 0;
+
+      // Get approved MCQ questions for this unit
+      const questions = await prisma.examBankQuestion.findMany({
+        where: {
+          unitId: unit.id,
+          questionType: 'MCQ',
+          approved: true,
+          isActive: true,
+        },
+        include: {
+          unit: true,
+        },
+      });
+
+      if (questions.length < count) {
+        throw new AppError(
+          `Not enough MCQ questions for Unit ${unit.unitNumber}. Need ${count}, have ${questions.length}`,
+          400
+        );
+      }
+
+      // Randomly shuffle and select questions
+      const shuffled = this.shuffleArray(questions);
+      const selected = shuffled.slice(0, count);
+
+      selectedQuestions.push(...selected);
+    }
+
+    // Final shuffle of all selected questions
+    const finalShuffled = this.shuffleArray(selectedQuestions);
+    
+    console.log(`✅ Selected 42 random MCQ questions distributed across units`);
+    return finalShuffled;
+  }
+
+  /**
+   * Get 4 random FRQ questions (one of each type)
+   * Randomly selects one question from each FRQ type category
+   */
+  async getFRQForExam(): Promise<any[]> {
+    console.log('🎲 Selecting 4 random FRQ questions...');
+
+    const frqTypes: FRQType[] = ['METHODS_CONTROL', 'CLASSES', 'ARRAYLIST', 'TWO_D_ARRAY'];
+    const selectedQuestions: any[] = [];
+
+    for (const frqType of frqTypes) {
+      const questions = await prisma.examBankQuestion.findMany({
+        where: {
+          questionType: 'FRQ',
+          frqType: frqType,
+          approved: true,
+          isActive: true,
+        },
+      });
+
+      if (questions.length === 0) {
+        throw new AppError(`No approved ${frqType} questions available`, 400);
+      }
+
+      // Randomly select one question from this type
+      const randomIndex = Math.floor(Math.random() * questions.length);
+      selectedQuestions.push(questions[randomIndex]);
+    }
+
+    console.log(`✅ Selected 4 random FRQ questions (one of each type)`);
+    return selectedQuestions;
+  }
+
+  /**
+   * Shuffle array using Fisher-Yates algorithm
+   */
+  private shuffleArray<T>(array: T[]): T[] {
+    const shuffled = [...array];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    return shuffled;
+  }
+
+  /**
    * Create a new exam bank question (MCQ)
    */
   async createMCQQuestion(data: {
@@ -36,47 +144,41 @@ export class ExamBankService {
   }
 
   /**
-   * Create a new FRQ question
+   * Create a new FRQ question with multi-part structure
    */
-  /**
- * Create a new FRQ question with multi-part structure
- */
-/**
- * Create a new FRQ question with multi-part structure
- */
-async createFRQQuestion(data: {
-  unitId: string;
-  frqType: FRQType;
-  questionText: string;
-  promptText: string;
-  starterCode?: string;
-  frqParts?: any; // Array of parts
-  maxPoints?: number;
-  explanation?: string;
-  approved?: boolean;
-}) {
-  const question = await prisma.examBankQuestion.create({
-    data: {
-      unitId: data.unitId,
-      questionType: 'FRQ',
-      frqType: data.frqType,
-      questionText: data.questionText,
-      promptText: data.promptText,
-      starterCode: data.starterCode,
-      frqParts: data.frqParts, // Store the parts array
-      maxPoints: data.maxPoints || 9,
-      explanation: data.explanation,
-      approved: data.approved ?? false,
-      aiGenerated: false,
-    },
-    include: {
-      unit: true,
-    },
-  });
+  async createFRQQuestion(data: {
+    unitId: string;
+    frqType: FRQType;
+    questionText: string;
+    promptText: string;
+    starterCode?: string;
+    frqParts?: any;
+    maxPoints?: number;
+    explanation?: string;
+    approved?: boolean;
+  }) {
+    const question = await prisma.examBankQuestion.create({
+      data: {
+        unitId: data.unitId,
+        questionType: 'FRQ',
+        frqType: data.frqType,
+        questionText: data.questionText,
+        promptText: data.promptText,
+        starterCode: data.starterCode,
+        frqParts: data.frqParts,
+        maxPoints: data.maxPoints || 9,
+        explanation: data.explanation,
+        approved: data.approved ?? false,
+        aiGenerated: false,
+      },
+      include: {
+        unit: true,
+      },
+    });
 
-  return question;
-}
- 
+    return question;
+  }
+
   /**
    * Get all exam bank questions with filters
    */
@@ -108,91 +210,6 @@ async createFRQQuestion(data: {
     });
 
     return questions;
-  }
-
-  /**
-   * Get random 42 MCQ questions for exam (distributed across units)
-   */
-  /**
- * Get random 42 MCQ questions for exam (distributed across units)
- */
-async getRandomMCQForExam(): Promise<any[]> {
-  // Get all units
-  const units = await prisma.examUnit.findMany({
-    orderBy: { unitNumber: 'asc' },
-  });
-
-  // Distribution based on exam weight (approximate)
-  // Unit 1: 15-25% → ~9 questions (21%)
-  // Unit 2: 25-35% → ~13 questions (31%)
-  // Unit 3: 10-18% → ~6 questions (14%)
-  // Unit 4: 30-40% → ~14 questions (33%)
-  const distribution: Record<number, number> = {
-    1: 9,
-    2: 13,
-    3: 6,
-    4: 14,
-  };
-
-  const selectedQuestions: any[] = [];
-
-  for (const unit of units) {
-    const count = distribution[unit.unitNumber] || 0;
-
-    // Get approved MCQ questions for this unit
-    const questions = await prisma.examBankQuestion.findMany({
-      where: {
-        unitId: unit.id,
-        questionType: 'MCQ',
-        approved: true,
-        isActive: true,
-      },
-    });
-
-    if (questions.length < count) {
-      throw new AppError(
-        `Not enough MCQ questions for Unit ${unit.unitNumber}. Need ${count}, have ${questions.length}`,
-        400
-      );
-    }
-
-    // Randomly select questions
-    const shuffled = questions.sort(() => 0.5 - Math.random());
-    const selected = shuffled.slice(0, count);
-
-    selectedQuestions.push(...selected);
-  }
-
-  // Shuffle final set
-  return selectedQuestions.sort(() => 0.5 - Math.random());
-}
-  /**
-   * Get 4 FRQ questions for exam (one of each type)
-   */
-  async getFRQForExam(): Promise<any[]> {
-    const frqTypes: FRQType[] = ['METHODS_CONTROL', 'CLASSES', 'ARRAYLIST', 'TWO_D_ARRAY'];
-    const selectedQuestions: any[] = [];
-
-    for (const frqType of frqTypes) {
-      const questions = await prisma.examBankQuestion.findMany({
-        where: {
-          questionType: 'FRQ',
-          frqType: frqType,
-          approved: true,
-          isActive: true,
-        },
-      });
-
-      if (questions.length === 0) {
-        throw new AppError(`No approved ${frqType} questions available`, 400);
-      }
-
-      // Randomly select one
-      const selected = questions[Math.floor(Math.random() * questions.length)];
-      selectedQuestions.push(selected);
-    }
-
-    return selectedQuestions;
   }
 
   /**

@@ -5,25 +5,34 @@ import { Prisma } from '@prisma/client';
 
 export class FullExamService {
   /**
-   * Start a new full exam attempt
+   * Start a new full exam attempt (unlimited retakes with random questions)
    */
   async startExam(userId: string) {
     console.log('🎓 Starting full exam for user:', userId);
 
     try {
-      // Get 42 MCQ questions
+      // Get user's previous attempt count
+      const previousAttempts = await prisma.fullExamAttempt.count({
+        where: { userId },
+      });
+
+      const attemptNumber = previousAttempts + 1;
+      console.log(`📊 This is attempt #${attemptNumber} for user ${userId}`);
+
+      // Get random MCQ questions (42 questions, distributed across units)
       const mcqQuestions = await examBankService.getRandomMCQForExam();
-      console.log(`✅ Selected ${mcqQuestions.length} MCQ questions`);
+      console.log(`✅ Selected ${mcqQuestions.length} random MCQ questions`);
 
-      // Get 4 FRQ questions
+      // Get random FRQ questions (4 questions, one of each type)
       const frqQuestions = await examBankService.getFRQForExam();
-      console.log(`✅ Selected ${frqQuestions.length} FRQ questions`);
+      console.log(`✅ Selected ${frqQuestions.length} random FRQ questions`);
 
-      // Create exam attempt
+      // Create exam attempt with attempt number
       const examAttempt = await prisma.fullExamAttempt.create({
         data: {
           userId,
           status: 'IN_PROGRESS',
+          attemptNumber,
         },
       });
 
@@ -57,6 +66,7 @@ export class FullExamService {
 
       return {
         examAttemptId: examAttempt.id,
+        attemptNumber,
         mcqQuestions: mcqQuestions.map((q, i) => ({
           ...q,
           orderIndex: i + 1,
@@ -76,6 +86,30 @@ export class FullExamService {
       console.error('❌ Error starting exam:', error);
       throw error;
     }
+  }
+
+  /**
+   * Get user's exam attempt history
+   */
+  async getUserExamHistory(userId: string) {
+    const attempts = await prisma.fullExamAttempt.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        attemptNumber: true,
+        status: true,
+        mcqScore: true,
+        mcqPercentage: true,
+        predictedAPScore: true,
+        percentageScore: true,
+        createdAt: true,
+        submittedAt: true,
+        totalTimeSpent: true,
+      },
+    });
+
+    return attempts;
   }
 
   /**
@@ -129,6 +163,8 @@ export class FullExamService {
     partResponses?: any[],
     timeSpent?: number
   ) {
+    console.log('📝 Saving FRQ answer:', { examAttemptId, frqNumber, hasCode: !!userCode, hasPartResponses: !!partResponses });
+
     const frqResponse = await prisma.examAttemptFRQ.findFirst({
       where: {
         examAttemptId,
@@ -149,6 +185,8 @@ export class FullExamService {
       },
     });
 
+    console.log('✅ FRQ answer saved successfully');
+
     return {
       saved: true,
       frqNumber,
@@ -160,9 +198,18 @@ export class FullExamService {
    * Get exam attempt with all responses
    */
   async getExamAttempt(examAttemptId: string) {
+    console.log('📋 Getting exam attempt:', examAttemptId);
+
     const examAttempt = await prisma.fullExamAttempt.findUnique({
       where: { id: examAttemptId },
       include: {
+        user: {
+          select: {
+            id: true,
+            email: true,
+            name: true,
+          },
+        },
         mcqResponses: {
           include: {
             question: {
@@ -185,6 +232,22 @@ export class FullExamService {
     if (!examAttempt) {
       throw new AppError('Exam attempt not found', 404);
     }
+
+    console.log('✅ Exam attempt found');
+    console.log('📊 FRQ Responses:', examAttempt.frqResponses.length);
+    
+    // Log each FRQ to verify userCode and partResponses
+    examAttempt.frqResponses.forEach((frq: any, index: number) => {
+      console.log(`FRQ ${index + 1}:`, {
+        id: frq.id,
+        frqNumber: frq.frqNumber,
+        hasUserCode: !!frq.userCode,
+        userCodeLength: frq.userCode?.length || 0,
+        userCodePreview: frq.userCode?.substring(0, 50) || 'none',
+        hasPartResponses: !!frq.partResponses,
+        partResponsesType: typeof frq.partResponses,
+      });
+    });
 
     return examAttempt;
   }
@@ -223,7 +286,7 @@ export class FullExamService {
     const examAttempt = await this.getExamAttempt(examAttemptId);
 
     // Calculate MCQ score
-    const mcqCorrect = examAttempt.mcqResponses.filter(r => r.isCorrect).length;
+    const mcqCorrect = examAttempt.mcqResponses.filter((r: any) => r.isCorrect).length;
     const mcqScore = mcqCorrect;
     const mcqPercentage = (mcqCorrect / 42) * 100;
 
@@ -245,9 +308,6 @@ export class FullExamService {
       weaknesses
     );
 
-    // Calculate weighted scores based on MCQ only
-    const mcqWeighted = (mcqScore / 42) * 55;
-    
     // No FRQ grading - mark as completed immediately
     await prisma.fullExamAttempt.update({
       where: { id: examAttemptId },
@@ -392,7 +452,7 @@ export class FullExamService {
       'Compare your FRQ code to the provided solutions',
       'Schedule a tutoring session to review FRQs if needed',
       'Practice weak MCQ units with targeted questions',
-      'Retake a full exam after focused study',
+      'Retake exam with new random questions after focused study',
     ];
 
     return recommendations;
@@ -427,6 +487,41 @@ export class FullExamService {
     if (percentage >= 50) return 3;
     if (percentage >= 37) return 2;
     return 1;
+  }
+
+  /**
+   * ADMIN: Get all exam attempts with filters
+   */
+  async getAllExamAttempts(filters: {
+    userId?: string;
+    status?: string;
+    limit?: number;
+    offset?: number;
+  }) {
+    const where: any = {};
+    if (filters.userId) where.userId = filters.userId;
+    if (filters.status) where.status = filters.status;
+
+    const [attempts, total] = await Promise.all([
+      prisma.fullExamAttempt.findMany({
+        where,
+        include: {
+          user: {
+            select: {
+              id: true,
+              email: true,
+              name: true,
+            },
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: filters.limit || 50,
+        skip: filters.offset || 0,
+      }),
+      prisma.fullExamAttempt.count({ where }),
+    ]);
+
+    return { attempts, total };
   }
 }
 

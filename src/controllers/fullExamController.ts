@@ -13,7 +13,53 @@ export const startFullExam = asyncHandler(async (req: Request, res: Response) =>
     data: examData,
   });
 });
+// Add this to fullExamController.ts temporarily for debugging
+export const debugExamAttempt = asyncHandler(async (req: Request, res: Response) => {
+  const { examAttemptId } = req.params;
 
+  console.log('🔍 Debug: Looking for exam attempt:', examAttemptId);
+
+  // Check if it exists
+  const attempt = await prisma.fullExamAttempt.findUnique({
+    where: { id: examAttemptId },
+  });
+
+  console.log('🔍 Debug: Found:', attempt ? 'YES' : 'NO');
+
+  if (attempt) {
+    console.log('🔍 Debug: Attempt details:', {
+      id: attempt.id,
+      userId: attempt.userId,
+      status: attempt.status,
+      createdAt: attempt.createdAt,
+    });
+  }
+
+  // Check all attempts for this user
+  if (req.user?.userId) {
+    const userAttempts = await prisma.fullExamAttempt.findMany({
+      where: { userId: req.user.userId },
+      orderBy: { createdAt: 'desc' },
+      take: 5,
+    });
+
+    console.log('🔍 Debug: User has', userAttempts.length, 'attempts');
+    console.log('🔍 Debug: Recent attempts:', userAttempts.map(a => ({
+      id: a.id,
+      status: a.status,
+      createdAt: a.createdAt,
+    })));
+  }
+
+  res.status(200).json({
+    status: 'success',
+    data: {
+      exists: !!attempt,
+      attempt,
+      examAttemptId,
+    },
+  });
+});
 // Submit MCQ answer
 export const submitMCQAnswer = asyncHandler(async (req: Request, res: Response) => {
   const { examAttemptId, orderIndex, userAnswer, timeSpent } = req.body;
@@ -53,14 +99,30 @@ export const submitFRQAnswer = asyncHandler(async (req: Request, res: Response) 
 export const getExamAttempt = asyncHandler(async (req: Request, res: Response) => {
   const { examAttemptId } = req.params;
 
-  const examAttempt = await fullExamService.getExamAttempt(examAttemptId);
+  console.log('📋 Fetching exam attempt:', examAttemptId);
 
-  res.status(200).json({
-    status: 'success',
-    data: { examAttempt },
-  });
+  // Validate examAttemptId
+  if (!examAttemptId || examAttemptId === 'undefined' || examAttemptId === 'null') {
+    throw new AppError('Invalid exam attempt ID', 400);
+  }
+
+  try {
+    const examAttempt = await fullExamService.getExamAttempt(examAttemptId);
+
+    res.status(200).json({
+      status: 'success',
+      data: { examAttempt },
+    });
+  } catch (error: any) {
+    console.error('❌ Error fetching exam attempt:', error);
+    
+    if (error.statusCode === 404) {
+      throw new AppError('Exam attempt not found. Please start a new exam.', 404);
+    }
+    
+    throw error;
+  }
 });
-
 // Flag for review
 export const flagMCQForReview = asyncHandler(async (req: Request, res: Response) => {
   const { examAttemptId, orderIndex, flagged } = req.body;

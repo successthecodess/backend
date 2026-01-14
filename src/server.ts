@@ -3,6 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import unitRoutes from './routes/unitRoutes.js';
 import questionRoutes from './routes/questionRoutes.js';
+import adminFullExamRoutes from './routes/adminFullExam.js';
 import authRoutes from './routes/authRoutes.js';
 import practiceRoutes from './routes/practiceRoutes.js';
 import progressRoutes from './routes/progressRoutes.js'; 
@@ -37,6 +38,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/free-trial', freeTrialRoutes);
 app.use('/api/admin/exam-bank', adminExamBankRoutes);
 app.use('/api/full-exam', fullExamRoutes);
+app.use('/api/admin/full-exams', adminFullExamRoutes);
 // Error handler
 app.use(errorHandler);
 

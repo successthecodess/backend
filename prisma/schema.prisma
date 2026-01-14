@@ -592,7 +592,7 @@ model FullExamAttempt {
   id                  String              @id @default(cuid())
   userId              String
   user                User                @relation(fields: [userId], references: [id], onDelete: Cascade)
-  
+  attemptNumber       Int                 @default(1) 
   startedAt           DateTime            @default(now())
   submittedAt         DateTime?
   status              FullExamStatus      @default(IN_PROGRESS)
@@ -621,6 +621,7 @@ model FullExamAttempt {
   updatedAt           DateTime            @updatedAt
   
   @@index([userId, status])
+  @@index([userId, attemptNumber])
   @@index([predictedAPScore])
   @@map("full_exam_attempts")
 }
