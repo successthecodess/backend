@@ -3,6 +3,8 @@ import axios from 'axios';
 import jwt from 'jsonwebtoken';
 import prisma from '../config/database.js';
 import { checkUserAccess } from '../middleware/accessControl.js';
+import nodemailer from 'nodemailer';
+
 const router = Router();
 
 const GHL_AUTH_URL = 'https://marketplace.gohighlevel.com/oauth/chooselocation';
@@ -10,15 +12,105 @@ const GHL_TOKEN_URL = 'https://services.leadconnectorhq.com/oauth/token';
 const GHL_API_BASE = 'https://services.leadconnectorhq.com';
 
 // ==========================================
-// CACHE SETUP
+// EMAIL SETUP
+// ==========================================
+
+const transporter = nodemailer.createTransport({
+  host: process.env.SMTP_HOST || 'smtp.gmail.com',
+  port: parseInt(process.env.SMTP_PORT || '587'),
+  secure: false,
+  auth: {
+    user: process.env.SMTP_USER,
+    pass: process.env.SMTP_PASS,
+  },
+});
+
+async function sendMagicLink(email: string, token: string) {
+  const magicLink = `${process.env.FRONTEND_URL}/auth/verify?token=${token}`;
+  
+  const mailOptions = {
+    from: `"AP CS Question Bank" <${process.env.SMTP_USER}>`,
+    to: email,
+    subject: 'Your Login Link - AP CS Question Bank',
+    html: `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+            .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
+            .content { background: #f9fafb; padding: 30px; border-radius: 0 0 10px 10px; }
+            .button { display: inline-block; padding: 15px 30px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; text-decoration: none; border-radius: 8px; font-weight: bold; margin: 20px 0; }
+            .footer { text-align: center; margin-top: 30px; color: #6b7280; font-size: 12px; }
+            .warning { background: #fef3c7; border-left: 4px solid #f59e0b; padding: 15px; margin: 20px 0; border-radius: 4px; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header">
+              <h1>🎓 Login to AP CS Question Bank</h1>
+            </div>
+            <div class="content">
+              <p>Hi there!</p>
+              <p>Click the button below to securely log in to your AP Computer Science Question Bank account:</p>
+              
+              <div style="text-align: center;">
+                <a href="${magicLink}" class="button">Log In Now</a>
+              </div>
+              
+              <p>Or copy and paste this link into your browser:</p>
+              <p style="background: white; padding: 15px; border-radius: 6px; word-break: break-all; font-size: 12px;">
+                ${magicLink}
+              </p>
+              
+              <div class="warning">
+                <strong>⏰ This link expires in 15 minutes</strong> for your security.
+              </div>
+              
+              <div class="warning">
+                <strong>🔒 Security Notice:</strong> If you didn't request this login link, please ignore this email. Someone may have mistyped their email address.
+              </div>
+              
+              <p>Happy studying!</p>
+            </div>
+            <div class="footer">
+              <p>This is an automated message from AP CS Question Bank</p>
+              <p>© ${new Date().getFullYear()} AP CS Question Bank. All rights reserved.</p>
+            </div>
+          </div>
+        </body>
+      </html>
+    `,
+    text: `
+      Login to AP CS Question Bank
+      
+      Click this link to log in: ${magicLink}
+      
+      This link expires in 15 minutes.
+      
+      If you didn't request this, please ignore this email.
+    `
+  };
+
+  try {
+    await transporter.sendMail(mailOptions);
+    console.log('✅ Magic link sent to:', email);
+    return true;
+  } catch (error) {
+    console.error('❌ Failed to send email:', error);
+    return false;
+  }
+}
+
+// ==========================================
+// CACHE SETUP & HELPER FUNCTIONS
 // ==========================================
 
 const contactCache = new Map<string, { contact: any; timestamp: number }>();
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
-// ==========================================
-// HELPER FUNCTIONS
-// ==========================================
+// ... (keep all your existing helper functions: refreshCompanyToken, getValidToken, searchContactByEmailSequential, searchContactByEmailParallel, searchContactByEmailCached, getProgressData, checkAndGrantAdminAccess) ...
 
 async function refreshCompanyToken(companyId: string, refreshToken: string): Promise<string> {
   try {
@@ -144,45 +236,6 @@ async function searchContactByEmailSequential(email: string, accessToken: string
     console.log('⚠️ Pagination failed in sequential search');
   }
 
-  // METHOD 3: Without location filter
-  try {
-    let startAfterId: string | undefined = undefined;
-    
-    for (let page = 0; page < 20; page++) {
-      const params: any = { limit: 100 };
-      if (startAfterId) params.startAfterId = startAfterId;
-
-      const listResponse = await axios.get(
-        `${GHL_API_BASE}/contacts/`,
-        {
-          params,
-          headers: {
-            'Authorization': `Bearer ${accessToken}`,
-            'Version': '2021-07-28'
-          },
-          timeout: 8000,
-        }
-      );
-
-      const contacts = listResponse.data.contacts || [];
-      if (contacts.length === 0) break;
-
-      const match = contacts.find((c: any) => 
-        c.email?.toLowerCase() === email.toLowerCase()
-      );
-
-      if (match) {
-        console.log(`✅ Found without location filter page ${page + 1}`);
-        return match;
-      }
-
-      if (contacts.length < 100) break;
-      startAfterId = contacts[contacts.length - 1].id;
-    }
-  } catch (error: any) {
-    console.log('⚠️ No-location search failed');
-  }
-
   console.log('❌ Not found in sequential search');
   return null;
 }
@@ -191,9 +244,7 @@ async function searchContactByEmailParallel(email: string, accessToken: string, 
   console.log('🚀 Parallel search started for:', email);
   const startTime = Date.now();
   
-  // Launch all methods in parallel
   const searchPromises = [
-    // Method 1: Query search (fastest)
     axios.get(`${GHL_API_BASE}/contacts/`, {
       params: { locationId, query: email, limit: 20 },
       headers: { 'Authorization': `Bearer ${accessToken}`, 'Version': '2021-07-28' },
@@ -208,7 +259,6 @@ async function searchContactByEmailParallel(email: string, accessToken: string, 
       success: false 
     })),
 
-    // Method 2: First page with location
     axios.get(`${GHL_API_BASE}/contacts/`, {
       params: { locationId, limit: 100, skip: 0 },
       headers: { 'Authorization': `Bearer ${accessToken}`, 'Version': '2021-07-28' },
@@ -222,42 +272,10 @@ async function searchContactByEmailParallel(email: string, accessToken: string, 
       contacts: [], 
       success: false 
     })),
-
-    // Method 3: First page without location
-    axios.get(`${GHL_API_BASE}/contacts/`, {
-      params: { limit: 100 },
-      headers: { 'Authorization': `Bearer ${accessToken}`, 'Version': '2021-07-28' },
-      timeout: 5000,
-    }).then(res => ({
-      method: 'page1-no-loc',
-      contacts: res.data.contacts || [],
-      success: true,
-    })).catch(() => ({ 
-      method: 'page1-no-loc', 
-      contacts: [], 
-      success: false 
-    })),
-
-    // Method 4: Second page with location (parallel)
-    axios.get(`${GHL_API_BASE}/contacts/`, {
-      params: { locationId, limit: 100, skip: 100 },
-      headers: { 'Authorization': `Bearer ${accessToken}`, 'Version': '2021-07-28' },
-      timeout: 5000,
-    }).then(res => ({
-      method: 'page2-with-loc',
-      contacts: res.data.contacts || [],
-      success: true,
-    })).catch(() => ({ 
-      method: 'page2-with-loc', 
-      contacts: [], 
-      success: false 
-    })),
   ];
 
-  // Wait for all parallel requests to complete
   const results = await Promise.all(searchPromises);
   
-  // Check all results for a match
   for (const result of results) {
     if (result.success && result.contacts.length > 0) {
       const match = result.contacts.find((c: any) => 
@@ -275,28 +293,23 @@ async function searchContactByEmailParallel(email: string, accessToken: string, 
   const parallelDuration = Date.now() - startTime;
   console.log(`⚠️ Not found in parallel search (${parallelDuration}ms), trying deep search...`);
   
-  // If not found in first pages, try sequential deep search
   return await searchContactByEmailSequential(email, accessToken, locationId, companyId);
 }
 
 async function searchContactByEmailCached(email: string, accessToken: string, locationId: string, companyId: string): Promise<any> {
   const cacheKey = `${email.toLowerCase()}-${locationId}`;
   
-  // Check cache first
   const cached = contactCache.get(cacheKey);
   if (cached && (Date.now() - cached.timestamp) < CACHE_TTL) {
     console.log('⚡ FOUND in cache (instant)');
     return cached.contact;
   }
 
-  // Search using parallel method
   const contact = await searchContactByEmailParallel(email, accessToken, locationId, companyId);
 
-  // Cache the result if found
   if (contact) {
     contactCache.set(cacheKey, { contact, timestamp: Date.now() });
     
-    // Clean up old cache entries (keep cache size reasonable)
     if (contactCache.size > 1000) {
       const entries = Array.from(contactCache.entries());
       entries.sort((a, b) => a[1].timestamp - b[1].timestamp);
@@ -360,7 +373,6 @@ async function getProgressData(userId: string) {
 
 async function checkAndGrantAdminAccess(email: string, userId: string): Promise<boolean> {
   try {
-    // Check if email is in admin list
     const adminEmail = await prisma.adminEmail.findUnique({
       where: { 
         email: email.toLowerCase(),
@@ -368,7 +380,6 @@ async function checkAndGrantAdminAccess(email: string, userId: string): Promise<
     });
 
     if (adminEmail && adminEmail.isActive) {
-      // Grant admin access
       await prisma.user.update({
         where: { id: userId },
         data: {
@@ -393,251 +404,437 @@ async function checkAndGrantAdminAccess(email: string, userId: string): Promise<
 }
 
 // ==========================================
-// DEBUG ENDPOINTS
+// MAGIC LINK AUTHENTICATION
 // ==========================================
 
-router.get('/oauth/debug/test-contact-fetch', async (req, res) => {
+router.post('/oauth/student/request-login', async (req, res) => {
+  const { email } = req.body;
+
+  if (!email) {
+    return res.status(400).json({ error: 'Email is required' });
+  }
+
   try {
+    console.log('📧 ========== MAGIC LINK REQUEST ==========');
+    console.log('   Email:', email);
+
     const companyAuth = await prisma.gHLCompanyAuth.findFirst({
       orderBy: { authorizedAt: 'desc' }
     });
 
     if (!companyAuth) {
-      return res.status(404).json({ error: 'No authorization found' });
+      return res.status(400).json({ 
+        error: 'Company not authorized. Admin must set up GHL integration first at /admin/ghl-setup' 
+      });
+    }
+
+    let accessToken: string;
+    try {
+      accessToken = await getValidToken(companyAuth);
+    } catch (refreshError: any) {
+      return res.status(401).json({ 
+        error: 'Session expired. Admin needs to re-authorize at /admin/ghl-setup'
+      });
+    }
+
+    // Check if email exists in GHL
+    let ghlContact: any = null;
+    let retryCount = 0;
+    const maxRetries = 2;
+
+    while (!ghlContact && retryCount <= maxRetries) {
+      try {
+        ghlContact = await searchContactByEmailCached(
+          email, 
+          accessToken, 
+          companyAuth.locationId!, 
+          companyAuth.companyId
+        );
+        break;
+      } catch (apiError: any) {
+        if (apiError.response?.status === 401 || apiError.response?.status === 403) {
+          console.log(`⚠️ Auth error (attempt ${retryCount + 1}), refreshing token...`);
+          try {
+            accessToken = await refreshCompanyToken(companyAuth.companyId, companyAuth.refreshToken);
+            retryCount++;
+          } catch {
+            return res.status(401).json({ 
+              error: 'Session expired. Admin needs to re-authorize at /admin/ghl-setup' 
+            });
+          }
+        } else {
+          throw apiError;
+        }
+      }
+    }
+
+    if (!ghlContact) {
+      console.log('❌ Email not found in TutorBoss');
+      console.log('========================================\n');
+      
+      // Don't reveal if email exists or not (security best practice)
+      return res.json({
+        success: true,
+        message: 'If this email is registered, you will receive a login link shortly.'
+      });
+    }
+
+    // Generate magic link token (expires in 15 minutes)
+    const magicToken = jwt.sign(
+      {
+        email: ghlContact.email,
+        ghlUserId: ghlContact.id,
+        type: 'magic-link',
+      },
+      process.env.JWT_SECRET!,
+      { expiresIn: '15m' }
+    );
+
+    // Send email
+    const emailSent = await sendMagicLink(ghlContact.email, magicToken);
+
+    if (!emailSent) {
+      console.error('❌ Failed to send email');
+      return res.status(500).json({ 
+        error: 'Failed to send login link. Please try again or contact support.'
+      });
+    }
+
+    console.log('✅ Magic link sent successfully');
+    console.log('========================================\n');
+
+    res.json({
+      success: true,
+      message: 'Check your email for a login link. It expires in 15 minutes.'
+    });
+
+  } catch (error: any) {
+    console.error('❌ MAGIC LINK REQUEST FAILED');
+    console.error('   Error:', error.message);
+    console.error('========================================\n');
+    res.status(500).json({ 
+      error: 'Request failed. Please try again.'
+    });
+  }
+});
+
+router.post('/oauth/student/verify-magic-link', async (req, res) => {
+  const { token } = req.body;
+
+  if (!token) {
+    return res.status(400).json({ error: 'Token is required' });
+  }
+
+  try {
+    console.log('🔐 ========== VERIFYING MAGIC LINK ==========');
+
+    // Verify token
+    const decoded = jwt.verify(token, process.env.JWT_SECRET!) as {
+      email: string;
+      ghlUserId: string;
+      type: string;
+    };
+
+    if (decoded.type !== 'magic-link') {
+      return res.status(400).json({ error: 'Invalid token type' });
+    }
+
+    const companyAuth = await prisma.gHLCompanyAuth.findFirst({
+      orderBy: { authorizedAt: 'desc' }
+    });
+
+    if (!companyAuth) {
+      return res.status(400).json({ 
+        error: 'System not configured. Please contact administrator.' 
+      });
     }
 
     const accessToken = await getValidToken(companyAuth);
 
-    const results: any = {
-      locationId: companyAuth.locationId,
-      companyId: companyAuth.companyId,
-      tests: {}
-    };
-
-    // Test parallel search
-    const startTime = Date.now();
-    const testContact = await searchContactByEmailParallel(
-      'test@example.com',
+    // Fetch latest data from GHL
+    const ghlContact = await searchContactByEmailCached(
+      decoded.email,
       accessToken,
       companyAuth.locationId!,
       companyAuth.companyId
     );
-    const duration = Date.now() - startTime;
 
-    results.parallelSearchTest = {
-      duration: `${duration}ms`,
-      found: !!testContact,
-      contact: testContact ? { email: testContact.email, name: `${testContact.firstName} ${testContact.lastName}` } : null,
-    };
-
-    res.json(results);
-  } catch (error: any) {
-    res.status(500).json({ 
-      error: error.message,
-      details: error.response?.data
-    });
-  }
-});
-
-router.get('/oauth/debug/token-status', async (req, res) => {
-  try {
-    const companyAuth = await prisma.gHLCompanyAuth.findFirst({
-      orderBy: { authorizedAt: 'desc' }
-    });
-
-    if (!companyAuth) {
-      return res.json({
-        status: 'not_found',
-        message: 'No company authorization found'
+    if (!ghlContact) {
+      return res.status(401).json({ 
+        error: 'Account no longer exists in TutorBoss'
       });
     }
 
-    const now = new Date();
-    const expiry = new Date(companyAuth.tokenExpiry);
-    const timeUntilExpiry = expiry.getTime() - now.getTime();
-    const hoursUntilExpiry = timeUntilExpiry / (1000 * 60 * 60);
-
-    res.json({
-      status: 'found',
-      companyId: companyAuth.companyId,
-      locationId: companyAuth.locationId,
-      authorizedBy: companyAuth.authorizedBy,
-      authorizedAt: companyAuth.authorizedAt,
-      tokenExpiry: companyAuth.tokenExpiry,
-      currentTime: now,
-      isExpired: now >= expiry,
-      hoursUntilExpiry: hoursUntilExpiry.toFixed(2),
-      hasRefreshToken: !!companyAuth.refreshToken,
-      cacheSize: contactCache.size,
-    });
-  } catch (error: any) {
-    res.status(500).json({ 
-      error: error.message,
-    });
-  }
-});
-
-router.post('/oauth/debug/force-refresh', async (req, res) => {
-  try {
-    const companyAuth = await prisma.gHLCompanyAuth.findFirst({
-      orderBy: { authorizedAt: 'desc' }
+    const fullName = `${ghlContact.firstName || ''} ${ghlContact.lastName || ''}`.trim();
+    const tags = ghlContact.tags || [];
+    
+    // Create or update user
+    let user = await prisma.user.findFirst({
+      where: {
+        OR: [
+          { email: ghlContact.email },
+          { ghlUserId: ghlContact.id }
+        ]
+      }
     });
 
-    if (!companyAuth) {
-      return res.status(404).json({ error: 'No authorization found' });
+    if (user) {
+      user = await prisma.user.update({
+        where: { id: user.id },
+        data: {
+          email: ghlContact.email,
+          name: fullName || ghlContact.name || ghlContact.email.split('@')[0],
+          ghlUserId: ghlContact.id,
+          ghlLocationId: companyAuth.locationId,
+          ghlCompanyId: companyAuth.companyId,
+          ghlTags: tags,
+          lastActive: new Date(),
+        },
+      });
+    } else {
+      user = await prisma.user.create({
+        data: {
+          email: ghlContact.email,
+          name: fullName || ghlContact.name || ghlContact.email.split('@')[0],
+          ghlUserId: ghlContact.id,
+          ghlLocationId: companyAuth.locationId,
+          ghlCompanyId: companyAuth.companyId,
+          ghlTags: tags,
+        },
+      });
     }
 
-    const newToken = await refreshCompanyToken(
-      companyAuth.companyId, 
-      companyAuth.refreshToken
+    await checkAndGrantAdminAccess(user.email, user.id);
+
+    user = await prisma.user.findUnique({
+      where: { id: user.id }
+    }) || user;
+
+    // Generate long-lived session token
+    const sessionToken = jwt.sign(
+      {
+        userId: user.id,
+        email: user.email,
+        name: user.name,
+        ghlUserId: user.ghlUserId,
+      },
+      process.env.JWT_SECRET!,
+      { expiresIn: '30d' }
     );
 
-    const updated = await prisma.gHLCompanyAuth.findUnique({
-      where: { companyId: companyAuth.companyId }
-    });
+    console.log('✅ MAGIC LINK VERIFIED - LOGIN SUCCESSFUL');
+    console.log('========================================\n');
 
     res.json({
       success: true,
-      message: 'Token refreshed successfully',
-      oldExpiry: companyAuth.tokenExpiry,
-      newExpiry: updated?.tokenExpiry,
-    });
-  } catch (error: any) {
-    res.status(500).json({ 
-      error: error.message,
-    });
-  }
-});
-
-router.post('/oauth/debug/clear-cache', async (req, res) => {
-  const sizeBefore = contactCache.size;
-  contactCache.clear();
-  res.json({
-    success: true,
-    message: 'Cache cleared',
-    entriesCleared: sizeBefore,
-  });
-});
-
-// ==========================================
-// ADMIN AUTHORIZATION
-// ==========================================
-
-router.get('/oauth/admin/authorize', (req, res) => {
-  const params = new URLSearchParams({
-    response_type: 'code',
-    redirect_uri: `${process.env.BACKEND_URL}/api/auth/oauth/admin/callback`,
-    client_id: process.env.GHL_CLIENT_ID!,
-    scope: 'contacts.readonly contacts.write locations/customValues.readonly locations/customValues.write locations/customFields.readonly locations/customFields.write locations.readonly',
-  });
-
-  const authUrl = `${GHL_AUTH_URL}?${params}`;
-  res.json({ authUrl });
-});
-
-router.get('/oauth/admin/callback', async (req, res) => {
-  const { code, error } = req.query;
-
-  if (error || !code) {
-    return res.redirect(`${process.env.FRONTEND_URL}/admin/ghl-setup?error=authorization_failed`);
-  }
-
-  try {
-    const tokenResponse = await axios.post(
-      GHL_TOKEN_URL,
-      new URLSearchParams({
-        client_id: process.env.GHL_CLIENT_ID!,
-        client_secret: process.env.GHL_CLIENT_SECRET!,
-        grant_type: 'authorization_code',
-        code: code as string,
-        redirect_uri: `${process.env.BACKEND_URL}/api/auth/oauth/admin/callback`,
-      }),
-      {
-        headers: { 
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'Accept': 'application/json'
-        }
-      }
-    );
-
-    const { access_token, refresh_token, expires_in, locationId, companyId, userId } = tokenResponse.data;
-    const expiryDate = new Date(Date.now() + (expires_in - 300) * 1000);
-
-    const userResponse = await axios.get(
-      `${GHL_API_BASE}/users/${userId}`,
-      {
-        headers: {
-          'Authorization': `Bearer ${access_token}`,
-          'Version': '2021-07-28'
-        }
-      }
-    );
-
-    const adminEmail = userResponse.data.email;
-
-    await prisma.gHLCompanyAuth.deleteMany({
-      where: { companyId }
-    });
-
-    await prisma.gHLCompanyAuth.create({
-      data: {
-        companyId,
-        locationId: locationId || null,
-        accessToken: access_token,
-        refreshToken: refresh_token,
-        tokenExpiry: expiryDate,
-        authorizedBy: adminEmail,
+      token: sessionToken,
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        isAdmin: user.isAdmin,
+        role: user.role,
       },
     });
 
-    // Clear cache when admin re-authorizes
-    contactCache.clear();
-
-    res.redirect(`${process.env.FRONTEND_URL}/admin/ghl-setup?success=true&companyId=${companyId}`);
   } catch (error: any) {
-    res.redirect(`${process.env.FRONTEND_URL}/admin/ghl-setup?error=setup_failed`);
-  }
-});
-
-router.get('/oauth/admin/status', async (req, res) => {
-  try {
-    const auth = await prisma.gHLCompanyAuth.findFirst({
-      orderBy: { authorizedAt: 'desc' }
-    });
-
-    if (!auth) {
-      return res.json({
-        authorized: false,
-        message: 'No company authorization found'
+    if (error.name === 'TokenExpiredError') {
+      return res.status(400).json({ 
+        error: 'This login link has expired. Please request a new one.' 
+      });
+    }
+    
+    if (error.name === 'JsonWebTokenError') {
+      return res.status(400).json({ 
+        error: 'Invalid login link.' 
       });
     }
 
-    const now = new Date();
-    const expiry = new Date(auth.tokenExpiry);
-    const isExpired = now >= expiry;
-    const hoursUntilExpiry = (expiry.getTime() - now.getTime()) / (1000 * 60 * 60);
-
-    res.json({
-      authorized: !isExpired,
-      companyId: auth.companyId,
-      locationId: auth.locationId,
-      authorizedBy: auth.authorizedBy,
-      authorizedAt: auth.authorizedAt,
-      tokenExpiry: auth.tokenExpiry,
-      currentTime: now,
-      isExpired,
-      hoursUntilExpiry: hoursUntilExpiry.toFixed(2),
+    console.error('❌ MAGIC LINK VERIFICATION FAILED');
+    console.error('   Error:', error.message);
+    console.error('========================================\n');
+    
+    res.status(500).json({ 
+      error: 'Verification failed. Please try again.'
     });
-  } catch (error: any) {
-    res.status(500).json({ error: 'Failed to check authorization status' });
   }
 });
 
 // ==========================================
-// PUBLIC ENDPOINTS (For authenticated users)
+// STUDENT SIGNUP (Creates account in GHL + sends magic link)
 // ==========================================
 
-// Get current user info
+router.post('/oauth/student/signup', async (req, res) => {
+  const { email, firstName, lastName, phone } = req.body;
+
+  if (!email || !firstName || !lastName) {
+    return res.status(400).json({ 
+      error: 'Email, first name, and last name are required' 
+    });
+  }
+
+  try {
+    console.log('📝 ========== SIGNUP ATTEMPT ==========');
+    console.log('   Email:', email);
+
+    const companyAuth = await prisma.gHLCompanyAuth.findFirst({
+      orderBy: { authorizedAt: 'desc' }
+    });
+
+    if (!companyAuth) {
+      return res.status(400).json({ 
+        error: 'System not configured. Please contact administrator.' 
+      });
+    }
+
+    let accessToken: string;
+    try {
+      accessToken = await getValidToken(companyAuth);
+    } catch (refreshError: any) {
+      return res.status(401).json({ 
+        error: 'System configuration error. Please contact administrator.' 
+      });
+    }
+
+    // Check if user already exists
+    const existingUser = await prisma.user.findUnique({
+      where: { email: email.toLowerCase() }
+    });
+
+    if (existingUser) {
+      console.log('❌ SIGNUP FAILED: User already exists');
+      console.log('========================================\n');
+      return res.status(409).json({ 
+        error: 'An account with this email already exists. Please use the login option instead.',
+        existingAccount: true
+      });
+    }
+
+    // Check GHL
+    let existingContact: any = null;
+    let retryCount = 0;
+    const maxRetries = 2;
+
+    while (existingContact === null && retryCount <= maxRetries) {
+      try {
+        existingContact = await searchContactByEmailCached(
+          email, 
+          accessToken, 
+          companyAuth.locationId!, 
+          companyAuth.companyId
+        );
+        break;
+      } catch (apiError: any) {
+        if (apiError.response?.status === 401 || apiError.response?.status === 403) {
+          try {
+            accessToken = await refreshCompanyToken(companyAuth.companyId, companyAuth.refreshToken);
+            retryCount++;
+          } catch {
+            return res.status(401).json({ 
+              error: 'System configuration error. Please contact administrator.' 
+            });
+          }
+        } else {
+          throw apiError;
+        }
+      }
+    }
+
+    if (existingContact) {
+      console.log('❌ SIGNUP FAILED: Email already exists in GHL');
+      console.log('========================================\n');
+      return res.status(409).json({ 
+        error: 'An account with this email already exists. Please use the login option instead.',
+        existingAccount: true
+      });
+    }
+
+    // Create in GHL
+    const contactData: any = {
+      firstName,
+      lastName,
+      email,
+      locationId: companyAuth.locationId,
+      source: 'AP CS Question Bank - Self Registration',
+      tags: ['student', 'ap-cs', 'self-registered'],
+      customFields: [
+        { key: 'total_questions_answered', value: '0' },
+        { key: 'overall_accuracy', value: '0' },
+        { key: 'current_streak', value: '0' },
+        { key: 'units_mastered', value: '0' },
+        { key: 'signup_date', value: new Date().toISOString() },
+        { key: 'study_time_minutes', value: '0' },
+      ],
+    };
+
+    if (phone) {
+      contactData.phone = phone;
+    }
+
+    const createResponse = await axios.post(
+      `${GHL_API_BASE}/contacts/`,
+      contactData,
+      {
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Version': '2021-07-28',
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+
+    const ghlContact = createResponse.data.contact;
+
+    // Generate magic link token
+    const magicToken = jwt.sign(
+      {
+        email: ghlContact.email,
+        ghlUserId: ghlContact.id,
+        type: 'magic-link',
+      },
+      process.env.JWT_SECRET!,
+      { expiresIn: '15m' }
+    );
+
+    // Send welcome email with magic link
+    const emailSent = await sendMagicLink(ghlContact.email, magicToken);
+
+    if (!emailSent) {
+      console.error('⚠️ Account created but email failed');
+    }
+
+    console.log('✅ SIGNUP SUCCESSFUL');
+    console.log('========================================\n');
+
+    res.json({
+      success: true,
+      message: 'Account created! Check your email for a login link.',
+      emailSent,
+    });
+
+  } catch (error: any) {
+    console.error('❌ SIGNUP FAILED');
+    console.error('   Error:', error.message);
+    console.error('========================================\n');
+    
+    if (error.response?.data) {
+      const ghlError = error.response.data;
+      if (ghlError.message?.includes('already exists') || ghlError.message?.includes('duplicate')) {
+        return res.status(409).json({ 
+          error: 'An account with this email already exists. Please login instead.',
+          existingAccount: true
+        });
+      }
+    }
+
+    res.status(500).json({ 
+      error: 'Signup failed. Please try again or contact support.'
+    });
+  }
+});
+
+// ... (keep all other existing routes: /oauth/me, /oauth/features, /oauth/admin/login, etc.) ...
+
 router.get('/oauth/me', async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
@@ -699,468 +896,6 @@ router.get('/oauth/me', async (req, res) => {
   }
 });
 
-// Get feature flags (public for checking access)
-router.get('/oauth/features', async (req, res) => {
-  try {
-    const authHeader = req.headers.authorization;
-    
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ error: 'No token provided' });
-    }
-
-    const token = authHeader.substring(7);
-    
-    try {
-      jwt.verify(token, process.env.JWT_SECRET!);
-    } catch (error) {
-      return res.status(401).json({ error: 'Invalid token' });
-    }
-
-    const features = await prisma.featureFlag.findMany({
-      where: { isEnabled: true },
-      select: {
-        id: true,
-        name: true,
-        displayName: true,
-        description: true,
-        requiredGhlTag: true,
-        requiresPremium: true,
-        requiresStaff: true,
-        isEnabled: true,
-      },
-      orderBy: { displayName: 'asc' }
-    });
-
-    res.json(features);
-  } catch (error: any) {
-    console.error('Failed to fetch features:', error);
-    res.status(500).json({ error: 'Failed to fetch features' });
-  }
-});
-
-// Get courses (public for checking access)
-router.get('/oauth/courses', async (req, res) => {
-  try {
-    const authHeader = req.headers.authorization;
-    
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ error: 'No token provided' });
-    }
-
-    const token = authHeader.substring(7);
-    
-    try {
-      jwt.verify(token, process.env.JWT_SECRET!);
-    } catch (error) {
-      return res.status(401).json({ error: 'Invalid token' });
-    }
-
-    const courses = await prisma.courseAccess.findMany({
-      where: { isActive: true },
-      select: {
-        id: true,
-        courseName: true,
-        courseSlug: true,
-        requiredGhlTag: true,
-        fallbackToFlag: true,
-        isActive: true,
-      },
-      orderBy: { courseName: 'asc' }
-    });
-
-    res.json(courses);
-  } catch (error: any) {
-    console.error('Failed to fetch courses:', error);
-    res.status(500).json({ error: 'Failed to fetch courses' });
-  }
-});
-
-// ==========================================
-// STUDENT LOGIN
-// ==========================================
-
-router.post('/oauth/student/login', async (req, res) => {
-  const { email } = req.body;
-
-  if (!email) {
-    return res.status(400).json({ error: 'Email is required' });
-  }
-
-  try {
-    console.log('👤 ========== LOGIN ATTEMPT ==========');
-    console.log('   Email:', email);
-
-    const companyAuth = await prisma.gHLCompanyAuth.findFirst({
-      orderBy: { authorizedAt: 'desc' }
-    });
-
-    if (!companyAuth) {
-      return res.status(400).json({ 
-        error: 'Company not authorized. Admin must set up GHL integration first at /admin/ghl-setup' 
-      });
-    }
-
-    let accessToken: string;
-    try {
-      accessToken = await getValidToken(companyAuth);
-    } catch (refreshError: any) {
-      return res.status(401).json({ 
-        error: 'Session expired. Admin needs to re-authorize at /admin/ghl-setup'
-      });
-    }
-
-    let ghlContact: any = null;
-    let retryCount = 0;
-    const maxRetries = 2;
-
-    while (!ghlContact && retryCount <= maxRetries) {
-      try {
-        ghlContact = await searchContactByEmailCached(
-          email, 
-          accessToken, 
-          companyAuth.locationId!, 
-          companyAuth.companyId
-        );
-        break;
-      } catch (apiError: any) {
-        if (apiError.response?.status === 401 || apiError.response?.status === 403) {
-          console.log(`⚠️ Auth error (attempt ${retryCount + 1}), refreshing token...`);
-          try {
-            accessToken = await refreshCompanyToken(companyAuth.companyId, companyAuth.refreshToken);
-            retryCount++;
-          } catch {
-            return res.status(401).json({ 
-              error: 'Session expired. Admin needs to re-authorize at /admin/ghl-setup' 
-            });
-          }
-        } else {
-          throw apiError;
-        }
-      }
-    }
-
-    if (!ghlContact) {
-      console.log('========================================\n');
-      return res.status(401).json({ 
-        error: 'Student not found in Tutor Boss. Please ensure your email is registered with your instructor, or sign up for a new account.',
-        suggestion: 'Try signing up if you don\'t have a Tutor Boss account yet.'
-      });
-    }
-
-    const fullName = `${ghlContact.firstName || ''} ${ghlContact.lastName || ''}`.trim();
-    const tags = ghlContact.tags || [];
-    
-    let user = await prisma.user.findFirst({
-      where: {
-        OR: [
-          { email: ghlContact.email },
-          { ghlUserId: ghlContact.id }
-        ]
-      }
-    });
-
-    if (user) {
-      user = await prisma.user.update({
-        where: { id: user.id },
-        data: {
-          email: ghlContact.email,
-          name: fullName || ghlContact.name || ghlContact.email.split('@')[0],
-          ghlUserId: ghlContact.id,
-          ghlLocationId: companyAuth.locationId,
-          ghlCompanyId: companyAuth.companyId,
-          ghlTags: tags,
-        },
-      });
-    } else {
-      user = await prisma.user.create({
-        data: {
-          email: ghlContact.email,
-          name: fullName || ghlContact.name || ghlContact.email.split('@')[0],
-          ghlUserId: ghlContact.id,
-          ghlLocationId: companyAuth.locationId,
-          ghlCompanyId: companyAuth.companyId,
-          ghlTags: tags,
-        },
-      });
-    }
-
-    await checkAndGrantAdminAccess(user.email, user.id);
-
-    user = await prisma.user.findUnique({
-      where: { id: user.id }
-    }) || user;
-
-    const token = jwt.sign(
-      {
-        userId: user.id,
-        email: user.email,
-        name: user.name,
-        ghlUserId: user.ghlUserId,
-      },
-      process.env.JWT_SECRET!,
-      { expiresIn: '30d' }
-    );
-
-    console.log('✅ LOGIN SUCCESSFUL');
-    console.log('========================================\n');
-
-    res.json({
-      success: true,
-      token,
-      user: {
-        id: user.id,
-        email: user.email,
-        name: user.name,
-      },
-    });
-  } catch (error: any) {
-    console.error('❌ LOGIN FAILED');
-    console.error('   Error:', error.message);
-    console.error('========================================\n');
-    res.status(500).json({ 
-      error: 'Login failed. Please try again.'
-    });
-  }
-});
-
-// ==========================================
-// STUDENT SIGNUP
-// ==========================================
-
-router.post('/oauth/student/signup', async (req, res) => {
-  const { email, firstName, lastName, phone } = req.body;
-
-  if (!email || !firstName || !lastName) {
-    return res.status(400).json({ 
-      error: 'Email, first name, and last name are required' 
-    });
-  }
-
-  try {
-    console.log('📝 ========== SIGNUP ATTEMPT ==========');
-    console.log('   Email:', email);
-
-    const companyAuth = await prisma.gHLCompanyAuth.findFirst({
-      orderBy: { authorizedAt: 'desc' }
-    });
-
-    if (!companyAuth) {
-      return res.status(400).json({ 
-        error: 'System not configured. Please contact administrator.' 
-      });
-    }
-
-    let accessToken: string;
-    try {
-      accessToken = await getValidToken(companyAuth);
-    } catch (refreshError: any) {
-      return res.status(401).json({ 
-        error: 'System configuration error. Please contact administrator.' 
-      });
-    }
-
-    let existingContact: any = null;
-    let retryCount = 0;
-    const maxRetries = 2;
-
-    while (existingContact === null && retryCount <= maxRetries) {
-      try {
-        existingContact = await searchContactByEmailCached(
-          email, 
-          accessToken, 
-          companyAuth.locationId!, 
-          companyAuth.companyId
-        );
-        break;
-      } catch (apiError: any) {
-        if (apiError.response?.status === 401 || apiError.response?.status === 403) {
-          try {
-            accessToken = await refreshCompanyToken(companyAuth.companyId, companyAuth.refreshToken);
-            retryCount++;
-          } catch {
-            return res.status(401).json({ 
-              error: 'System configuration error. Please contact administrator.' 
-            });
-          }
-        } else {
-          throw apiError;
-        }
-      }
-    }
-
-    if (existingContact) {
-      console.log('❌ SIGNUP FAILED: Email already exists');
-      console.log('========================================\n');
-      return res.status(409).json({ 
-        error: 'An account with this email already exists. Please use the login option instead.',
-        existingAccount: true
-      });
-    }
-
-    const contactData: any = {
-      firstName,
-      lastName,
-      email,
-      locationId: companyAuth.locationId,
-      source: 'AP CS Question Bank - Self Registration',
-      tags: ['student', 'ap-cs', 'self-registered'],
-      customFields: [
-        { key: 'total_questions_answered', value: '0' },
-        { key: 'overall_accuracy', value: '0' },
-        { key: 'current_streak', value: '0' },
-        { key: 'units_mastered', value: '0' },
-        { key: 'signup_date', value: new Date().toISOString() },
-        { key: 'study_time_minutes', value: '0' },
-      ],
-    };
-
-    if (phone) {
-      contactData.phone = phone;
-    }
-
-    const createResponse = await axios.post(
-      `${GHL_API_BASE}/contacts/`,
-      contactData,
-      {
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'Version': '2021-07-28',
-          'Content-Type': 'application/json',
-        },
-      }
-    );
-
-    const ghlContact = createResponse.data.contact;
-    const tags = ghlContact.tags || [];
-
-    const fullName = `${firstName} ${lastName}`.trim();
-    
-    let user = await prisma.user.findUnique({
-      where: { email }
-    });
-
-    if (user) {
-      user = await prisma.user.update({
-        where: { id: user.id },
-        data: {
-          name: fullName,
-          ghlUserId: ghlContact.id,
-          ghlLocationId: companyAuth.locationId,
-          ghlCompanyId: companyAuth.companyId,
-          ghlTags: tags,
-        },
-      });
-    } else {
-      user = await prisma.user.create({
-        data: {
-          email,
-          name: fullName,
-          ghlUserId: ghlContact.id,
-          ghlLocationId: companyAuth.locationId,
-          ghlCompanyId: companyAuth.companyId,
-          ghlTags: tags,
-        },
-      });
-    }
-
-    await checkAndGrantAdminAccess(user.email, user.id);
-
-    user = await prisma.user.findUnique({
-      where: { id: user.id }
-    }) || user;
-
-    const token = jwt.sign(
-      {
-        userId: user.id,
-        email: user.email,
-        name: user.name,
-        ghlUserId: user.ghlUserId,
-      },
-      process.env.JWT_SECRET!,
-      { expiresIn: '30d' }
-    );
-
-    console.log('✅ SIGNUP SUCCESSFUL');
-    console.log('========================================\n');
-
-    res.json({
-      success: true,
-      token,
-      user: {
-        id: user.id,
-        email: user.email,
-        name: user.name,
-      },
-    });
-  } catch (error: any) {
-    console.error('❌ SIGNUP FAILED');
-    console.error('   Error:', error.message);
-    console.error('========================================\n');
-    
-    if (error.response?.data) {
-      const ghlError = error.response.data;
-      if (ghlError.message?.includes('already exists') || ghlError.message?.includes('duplicate')) {
-        return res.status(409).json({ 
-          error: 'An account with this email already exists. Please login instead.',
-          existingAccount: true
-        });
-      }
-    }
-
-    res.status(500).json({ 
-      error: 'Signup failed. Please try again or contact support.'
-    });
-  }
-});
-import bcrypt from 'bcryptjs';
-
-// Add to your existing authRoutes.ts
-
-/**
- * Set password for existing account (first-time setup)
- */
-router.post('/oauth/student/set-password', async (req, res) => {
-  const { email, password, token } = req.body;
-
-  if (!password || password.length < 8) {
-    return res.status(400).json({ 
-      error: 'Password must be at least 8 characters long' 
-    });
-  }
-
-  try {
-    // Verify token if provided (from email link)
-    let userEmail = email;
-    
-    if (token) {
-      const decoded = jwt.verify(token, process.env.JWT_SECRET!) as any;
-      userEmail = decoded.email;
-    }
-
-    // Hash password
-    const hashedPassword = await bcrypt.hash(password, 10);
-
-    // Update user
-    const user = await prisma.user.update({
-      where: { email: userEmail },
-      data: { 
-        password: hashedPassword,
-        passwordSetAt: new Date(),
-      },
-    });
-
-    console.log('✅ Password set for user:', userEmail);
-
-    res.json({
-      success: true,
-      message: 'Password set successfully. You can now login with your password.',
-    });
-  } catch (error: any) {
-    console.error('Failed to set password:', error);
-    res.status(500).json({ error: 'Failed to set password' });
-  }
-});
-// In authRoutes.ts
 router.get('/oauth/my-access', async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
@@ -1179,387 +914,6 @@ router.get('/oauth/my-access', async (req, res) => {
     res.status(401).json({ error: 'Invalid token' });
   }
 });
-
-/**
- * Login with email + password
- */
-router.post('/oauth/student/login-with-password', async (req, res) => {
-  const { email, password } = req.body;
-
-  if (!email || !password) {
-    return res.status(400).json({ error: 'Email and password are required' });
-  }
-
-  try {
-    // Find user
-    const user = await prisma.user.findUnique({
-      where: { email: email.toLowerCase() },
-    });
-
-    if (!user) {
-      return res.status(401).json({ error: 'Invalid email or password' });
-    }
-
-    // Check if password is set
-    if (!user.password) {
-      return res.status(400).json({ 
-        error: 'Password not set. Please use the "Login with Email" option first.',
-        needsPasswordSetup: true,
-      });
-    }
-
-    // Verify password
-    const isValidPassword = await bcrypt.compare(password, user.password);
-
-    if (!isValidPassword) {
-      return res.status(401).json({ error: 'Invalid email or password' });
-    }
-
-    // Check admin access
-    await checkAndGrantAdminAccess(user.email, user.id);
-
-    // Fetch updated user
-    const updatedUser = await prisma.user.findUnique({
-      where: { id: user.id },
-    });
-
-    // Generate token
-    const token = jwt.sign(
-      {
-        userId: updatedUser!.id,
-        email: updatedUser!.email,
-        name: updatedUser!.name,
-        isAdmin: updatedUser!.isAdmin,
-        role: updatedUser!.role,
-      },
-      process.env.JWT_SECRET!,
-      { expiresIn: '30d' }
-    );
-
-    // Update last active
-    await prisma.user.update({
-      where: { id: user.id },
-      data: { lastActive: new Date() },
-    });
-
-    res.json({
-      success: true,
-      token,
-      user: {
-        id: updatedUser!.id,
-        email: updatedUser!.email,
-        name: updatedUser!.name,
-        isAdmin: updatedUser!.isAdmin,
-        role: updatedUser!.role,
-      },
-    });
-  } catch (error: any) {
-    console.error('Login failed:', error);
-    res.status(500).json({ error: 'Login failed. Please try again.' });
-  }
-});
-/**
- * Admin login with email + password
- */
-router.post('/oauth/admin/login', async (req, res) => {
-  const { email, password } = req.body;
-
-  if (!email || !password) {
-    return res.status(400).json({ error: 'Email and password are required' });
-  }
-
-  try {
-    console.log('👨‍💼 ========== ADMIN LOGIN ATTEMPT ==========');
-    console.log('   Email:', email);
-
-    // Check if email is in admin list
-    const adminEmail = await prisma.adminEmail.findUnique({
-      where: { email: email.toLowerCase() },
-    });
-
-    if (!adminEmail || !adminEmail.isActive) {
-      console.log('❌ Not an authorized admin email');
-      return res.status(401).json({ error: 'Invalid admin credentials' });
-    }
-
-    // Find or create admin user
-    let user = await prisma.user.findUnique({
-      where: { email: email.toLowerCase() },
-    });
-
-    if (!user) {
-      // First time admin login - create account
-      console.log('📝 Creating new admin account');
-      
-      const hashedPassword = await bcrypt.hash(password, 10);
-      
-      user = await prisma.user.create({
-        data: {
-          email: email.toLowerCase(),
-          name:  email.split('@')[0],
-          password: hashedPassword,
-          isAdmin: true,
-          isStaff: true,
-          role: 'ADMIN',
-          hasAccessToQuestionBank: true,
-          hasAccessToTimedPractice: true,
-          hasAccessToAnalytics: true,
-          passwordSetAt: new Date(),
-        },
-      });
-
-      console.log('✅ Admin account created');
-    } else {
-      // Existing user - verify they're admin and check password
-      if (!user.isAdmin) {
-        console.log('❌ User exists but is not admin');
-        return res.status(403).json({ error: 'Access denied' });
-      }
-
-      if (!user.password) {
-        console.log('📝 Admin account exists but no password set');
-        
-        // Set password for existing admin
-        const hashedPassword = await bcrypt.hash(password, 10);
-        
-        user = await prisma.user.update({
-          where: { id: user.id },
-          data: {
-            password: hashedPassword,
-            passwordSetAt: new Date(),
-          },
-        });
-
-        console.log('✅ Password set for existing admin');
-      } else {
-        // Verify password
-        const isValidPassword = await bcrypt.compare(password, user.password);
-
-        if (!isValidPassword) {
-          console.log('❌ Invalid password');
-          return res.status(401).json({ error: 'Invalid admin credentials' });
-        }
-      }
-    }
-
-    // Generate token
-    const token = jwt.sign(
-      {
-        userId: user.id,
-        email: user.email,
-        name: user.name,
-        isAdmin: true,
-        role: 'ADMIN',
-      },
-      process.env.JWT_SECRET!,
-      { expiresIn: '30d' }
-    );
-
-    // Update last active
-    await prisma.user.update({
-      where: { id: user.id },
-      data: { lastActive: new Date() },
-    });
-
-    console.log('✅ ADMIN LOGIN SUCCESSFUL');
-    console.log('==========================================\n');
-
-    res.json({
-      success: true,
-      token,
-      user: {
-        id: user.id,
-        email: user.email,
-        name: user.name,
-        isAdmin: user.isAdmin,
-        role: user.role,
-      },
-    });
-  } catch (error: any) {
-    console.error('❌ ADMIN LOGIN FAILED');
-    console.error('   Error:', error.message);
-    console.error('==========================================\n');
-    res.status(500).json({ error: 'Login failed. Please try again.' });
-  }
-});
-
-/**
- * Change admin password
- */
-router.post('/oauth/admin/change-password', async (req, res) => {
-  const { currentPassword, newPassword } = req.body;
-
-  if (!newPassword || newPassword.length < 8) {
-    return res.status(400).json({ 
-      error: 'New password must be at least 8 characters long' 
-    });
-  }
-
-  try {
-    const authHeader = req.headers.authorization;
-    
-    if (!authHeader) {
-      return res.status(401).json({ error: 'No token provided' });
-    }
-
-    const token = authHeader.substring(7);
-    const decoded = jwt.verify(token, process.env.JWT_SECRET!) as { userId: string };
-
-    const user = await prisma.user.findUnique({
-      where: { id: decoded.userId },
-    });
-
-    if (!user || !user.isAdmin) {
-      return res.status(403).json({ error: 'Access denied' });
-    }
-
-    // Verify current password if set
-    if (user.password && currentPassword) {
-      const isValidPassword = await bcrypt.compare(currentPassword, user.password);
-      
-      if (!isValidPassword) {
-        return res.status(401).json({ error: 'Current password is incorrect' });
-      }
-    }
-
-    // Hash and set new password
-    const hashedPassword = await bcrypt.hash(newPassword, 10);
-
-    await prisma.user.update({
-      where: { id: user.id },
-      data: {
-        password: hashedPassword,
-        passwordSetAt: new Date(),
-      },
-    });
-
-    console.log('✅ Admin password changed:', user.email);
-
-    res.json({
-      success: true,
-      message: 'Password changed successfully',
-    });
-  } catch (error: any) {
-    console.error('Failed to change password:', error);
-    res.status(500).json({ error: 'Failed to change password' });
-  }
-});
-
-router.post('/oauth/admin/request-reset', async (req, res) => {
-  const { email } = req.body;
-
-  if (!email) {
-    return res.status(400).json({ error: 'Email is required' });
-  }
-
-  try {
-    const adminEmail = await prisma.adminEmail.findUnique({
-      where: { email: email.toLowerCase() },
-    });
-
-    if (!adminEmail || !adminEmail.isActive) {
-      return res.json({ 
-        success: true, 
-        message: 'If this email is registered, you will receive reset instructions.' 
-      });
-    }
-
-    const user = await prisma.user.findUnique({
-      where: { email: email.toLowerCase() },
-    });
-
-    let resetToken: string | undefined;
-
-    if (user && user.isAdmin) {
-      // Generate reset token (expires in 1 hour)
-      resetToken = jwt.sign(
-        { userId: user.id, email: user.email, type: 'password-reset' },
-        process.env.JWT_SECRET!,
-        { expiresIn: '1h' }
-      );
-
-      console.log('🔐 Password reset token for', email);
-      console.log('Reset link:', `${process.env.FRONTEND_URL}/admin/reset-password?token=${resetToken}`);
-    }
-
-    res.json({ 
-      success: true, 
-      message: 'If this email is registered, you will receive reset instructions.',
-      // In development, return the token
-      ...(process.env.NODE_ENV === 'development' && resetToken && { resetToken }),
-    });
-  } catch (error: any) {
-    console.error('Password reset request failed:', error);
-    res.status(500).json({ error: 'Failed to process request' });
-  }
-});
-
-/**
- * Reset password with token
- */
-router.post('/oauth/admin/reset-password', async (req, res) => {
-  const { token, newPassword } = req.body;
-
-  if (!token || !newPassword) {
-    return res.status(400).json({ error: 'Token and new password are required' });
-  }
-
-  if (newPassword.length < 8) {
-    return res.status(400).json({ error: 'Password must be at least 8 characters long' });
-  }
-
-  try {
-    // Verify reset token
-    const decoded = jwt.verify(token, process.env.JWT_SECRET!) as { 
-      userId: string; 
-      email: string; 
-      type: string;
-    };
-
-    if (decoded.type !== 'password-reset') {
-      return res.status(400).json({ error: 'Invalid reset token' });
-    }
-
-    const user = await prisma.user.findUnique({
-      where: { id: decoded.userId },
-    });
-
-    if (!user || !user.isAdmin) {
-      return res.status(403).json({ error: 'Invalid reset token' });
-    }
-
-    // Hash and set new password
-    const hashedPassword = await bcrypt.hash(newPassword, 10);
-
-    await prisma.user.update({
-      where: { id: user.id },
-      data: {
-        password: hashedPassword,
-        passwordSetAt: new Date(),
-        // Clear reset token fields
-        // passwordResetToken: null,
-        // passwordResetExpiry: null,
-      },
-    });
-
-    console.log('✅ Admin password reset:', user.email);
-
-    res.json({
-      success: true,
-      message: 'Password reset successfully. You can now login.',
-    });
-  } catch (error: any) {
-    if (error.name === 'TokenExpiredError') {
-      return res.status(400).json({ error: 'Reset token has expired. Please request a new one.' });
-    }
-    
-    console.error('Password reset failed:', error);
-    res.status(500).json({ error: 'Failed to reset password' });
-  }
-});
-// ==========================================
-// PROGRESS SYNC
-// ==========================================
 
 router.post('/oauth/sync-progress', async (req, res) => {
   const { userId } = req.body;
