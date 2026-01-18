@@ -5,6 +5,16 @@ import axios from 'axios';
 
 const GHL_API_BASE = 'https://services.leadconnectorhq.com';
 
+// Fisher-Yates shuffle algorithm
+function shuffleArray<T>(array: T[]): T[] {
+  const shuffled = [...array];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  return shuffled;
+}
+
 class FreeTrialService {
   /**
    * Check if user has used their free trial
@@ -19,7 +29,7 @@ class FreeTrialService {
   }
 
   /**
-   * Get the admin-selected 10 free trial questions
+   * Get the admin-selected 10 free trial questions (RANDOMIZED)
    */
   async getFreeTrialQuestions(): Promise<any[]> {
     console.log('📚 Fetching admin-selected free trial questions...');
@@ -33,9 +43,7 @@ class FreeTrialService {
           },
         },
       },
-      orderBy: {
-        orderIndex: 'asc',
-      },
+      // Don't order by orderIndex - we'll randomize instead
     });
 
     if (freeTrialQuestions.length === 0) {
@@ -48,12 +56,12 @@ class FreeTrialService {
 
     const questions = freeTrialQuestions.map(ftq => ftq.question);
 
-    console.log(`✅ Loaded ${questions.length} free trial questions`);
-    questions.forEach((q, i) => {
-      console.log(`   ${i + 1}. Unit ${q.unit?.unitNumber} - ${q.topic?.name || 'General'} (${q.difficulty})`);
-    });
+    // RANDOMIZE THE ORDER
+    const randomizedQuestions = shuffleArray(questions);
 
-    return questions;
+    console.log(`✅ Loaded ${randomizedQuestions.length} free trial questions (randomized)`);
+
+    return randomizedQuestions;
   }
 
   /**
@@ -71,22 +79,26 @@ class FreeTrialService {
       );
     }
 
-    // Get the admin-selected questions
+    // Get the admin-selected questions (now randomized)
     const questions = await this.getFreeTrialQuestions();
 
     if (questions.length === 0) {
       throw new AppError('No questions available for free trial. Please contact support.', 404);
     }
 
-    // Create session - USE ENUM HERE
+    // Store randomized question order in session metadata
+    const questionOrder = questions.map(q => q.id);
+
+    // Create session
     const session = await prisma.studySession.create({
       data: {
         userId,
         unitId: questions[0].unitId,
-        sessionType: SessionType.FREE_TRIAL, // CHANGED THIS LINE
+        sessionType: SessionType.FREE_TRIAL,
         totalQuestions: 0,
         correctAnswers: 0,
         targetQuestions: questions.length,
+        metadata: { questionOrder }, // Store the randomized order
       },
     });
 
@@ -116,18 +128,28 @@ class FreeTrialService {
 
     console.log('✅ User marked as free trial completed');
 
-    // Add GHL tag "trial-completed" for email automation
-    await this.addTrialCompletedTag(user);
+    // Add GHL tag "trial-completed" for email automation (async, don't wait)
+    this.addTrialCompletedTag(user).catch(err => 
+      console.error('Failed to add trial tag:', err)
+    );
 
-    // Get session summary
+    // Get session summary (optimized query)
     const session = await prisma.studySession.findUnique({
       where: { id: sessionId },
-      include: {
+      select: {
+        id: true,
+        totalQuestions: true,
+        correctAnswers: true,
         responses: {
-          include: {
+          select: {
+            isCorrect: true,
             question: {
-              include: {
-                topic: true,
+              select: {
+                topic: {
+                  select: {
+                    name: true,
+                  },
+                },
               },
             },
           },
@@ -152,7 +174,7 @@ class FreeTrialService {
   }
 
   /**
-   * Add "trial-completed" tag to GHL contact
+   * Add "trial-completed" tag to GHL contact (async)
    */
   private async addTrialCompletedTag(user: any) {
     try {
@@ -163,6 +185,7 @@ class FreeTrialService {
 
       const companyAuth = await prisma.gHLCompanyAuth.findUnique({
         where: { companyId: user.ghlCompanyId },
+        select: { accessToken: true }, // Only select what we need
       });
 
       if (!companyAuth) {
@@ -178,6 +201,7 @@ class FreeTrialService {
             'Authorization': `Bearer ${companyAuth.accessToken}`,
             'Version': '2021-07-28',
           },
+          timeout: 5000, // Add timeout
         }
       );
 
@@ -196,6 +220,7 @@ class FreeTrialService {
               'Version': '2021-07-28',
               'Content-Type': 'application/json',
             },
+            timeout: 5000,
           }
         );
 
@@ -218,15 +243,29 @@ class FreeTrialService {
   // Admin functions for managing free trial questions
 
   /**
-   * Get all free trial questions (admin)
+   * Get all free trial questions (admin) - OPTIMIZED
    */
   async getAllFreeTrialQuestions() {
     return await prisma.freeTrialQuestion.findMany({
       include: {
         question: {
-          include: {
-            unit: true,
-            topic: true,
+          select: {
+            id: true,
+            questionText: true,
+            difficulty: true,
+            unit: {
+              select: {
+                id: true,
+                unitNumber: true,
+                name: true,
+              },
+            },
+            topic: {
+              select: {
+                id: true,
+                name: true,
+              },
+            },
           },
         },
       },
@@ -240,35 +279,48 @@ class FreeTrialService {
    * Set a question as free trial question (admin)
    */
   async setFreeTrialQuestion(questionId: string, orderIndex: number) {
-    // Check if this position is already taken
-    const existing = await prisma.freeTrialQuestion.findUnique({
-      where: { orderIndex },
-    });
-
-    if (existing) {
-      // Remove the existing one first
-      await prisma.freeTrialQuestion.delete({
+    // Use transaction for atomicity
+    return await prisma.$transaction(async (tx) => {
+      // Check if this position is already taken
+      const existing = await tx.freeTrialQuestion.findUnique({
         where: { orderIndex },
       });
-    }
 
-    // Add the new one
-    const freeTrialQuestion = await prisma.freeTrialQuestion.create({
-      data: {
-        questionId,
-        orderIndex,
-      },
-      include: {
-        question: {
-          include: {
-            unit: true,
-            topic: true,
+      if (existing) {
+        // Remove the existing one first
+        await tx.freeTrialQuestion.delete({
+          where: { orderIndex },
+        });
+      }
+
+      // Add the new one
+      return await tx.freeTrialQuestion.create({
+        data: {
+          questionId,
+          orderIndex,
+        },
+        include: {
+          question: {
+            select: {
+              id: true,
+              questionText: true,
+              difficulty: true,
+              unit: {
+                select: {
+                  unitNumber: true,
+                  name: true,
+                },
+              },
+              topic: {
+                select: {
+                  name: true,
+                },
+              },
+            },
           },
         },
-      },
+      });
     });
-
-    return freeTrialQuestion;
   }
 
   /**
@@ -281,7 +333,7 @@ class FreeTrialService {
   }
 
   /**
-   * Get available questions for selection (admin)
+   * Get available questions for selection (admin) - OPTIMIZED
    */
   async getAvailableQuestions(unitId?: string) {
     const where: any = {
@@ -294,15 +346,35 @@ class FreeTrialService {
 
     return await prisma.question.findMany({
       where,
-      include: {
-        unit: true,
-        topic: true,
-        freeTrialQuestions: true,
+      select: {
+        id: true,
+        questionText: true,
+        difficulty: true,
+        unitId: true,
+        unit: {
+          select: {
+            id: true,
+            unitNumber: true,
+            name: true,
+          },
+        },
+        topic: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+        freeTrialQuestions: {
+          select: {
+            orderIndex: true,
+          },
+        },
       },
       orderBy: [
         { unit: { unitNumber: 'asc' } },
         { createdAt: 'desc' },
       ],
+      take: 100, // Limit results for performance
     });
   }
 }

@@ -3,7 +3,7 @@ import axios from 'axios';
 import jwt from 'jsonwebtoken';
 import prisma from '../config/database.js';
 import { checkUserAccess } from '../middleware/accessControl.js';
-import nodemailer from 'nodemailer';
+import { Resend } from 'resend';
 
 const router = Router();
 
@@ -12,113 +12,90 @@ const GHL_TOKEN_URL = 'https://services.leadconnectorhq.com/oauth/token';
 const GHL_API_BASE = 'https://services.leadconnectorhq.com';
 
 // ==========================================
-// EMAIL SETUP WITH GMAIL
+// EMAIL SETUP WITH RESEND
 // ==========================================
 
-const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST || 'smtp.gmail.com',
-  port: parseInt(process.env.SMTP_PORT || '465'),
-  secure: process.env.SMTP_SECURE === 'true', // true for 465, false for 587
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
-  },
-  // Add these for better reliability
-  connectionTimeout: 10000, // 10 seconds
-  greetingTimeout: 10000,
-  socketTimeout: 10000,
-  logger: false, // Set to true for debugging
-  debug: false, // Set to true for debugging
-});
-
-// Verify connection on startup
-transporter.verify((error, success) => {
-  if (error) {
-    console.error('❌ SMTP connection failed:', error.message);
-    console.error('Check your Gmail credentials in .env file');
-  } else {
-    console.log('✅ SMTP server is ready to send emails');
-  }
-});
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 async function sendMagicLink(email: string, token: string) {
   const magicLink = `${process.env.FRONTEND_URL}/auth/verify?token=${token}`;
   
-  const mailOptions = {
-    from: `"AP CS Question Bank" <${process.env.SMTP_USER}>`,
-    to: email,
-    subject: 'Your Login Link - AP CS Question Bank',
-    html: `
-      <!DOCTYPE html>
-      <html>
-        <head>
-          <style>
-            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-            .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
-            .content { background: #f9fafb; padding: 30px; border-radius: 0 0 10px 10px; }
-            .button { display: inline-block; padding: 15px 30px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; text-decoration: none; border-radius: 8px; font-weight: bold; margin: 20px 0; }
-            .footer { text-align: center; margin-top: 30px; color: #6b7280; font-size: 12px; }
-            .warning { background: #fef3c7; border-left: 4px solid #f59e0b; padding: 15px; margin: 20px 0; border-radius: 4px; }
-          </style>
-        </head>
-        <body>
-          <div class="container">
-            <div class="header">
-              <h1>🎓 Login to AP CS Question Bank</h1>
-            </div>
-            <div class="content">
-              <p>Hi there!</p>
-              <p>Click the button below to securely log in to your AP Computer Science Question Bank account:</p>
-              
-              <div style="text-align: center;">
-                <a href="${magicLink}" class="button">Log In Now</a>
-              </div>
-              
-              <p>Or copy and paste this link into your browser:</p>
-              <p style="background: white; padding: 15px; border-radius: 6px; word-break: break-all; font-size: 12px;">
-                ${magicLink}
-              </p>
-              
-              <div class="warning">
-                <strong>⏰ This link expires in 15 minutes</strong> for your security.
-              </div>
-              
-              <div class="warning">
-                <strong>🔒 Security Notice:</strong> If you didn't request this login link, please ignore this email. Someone may have mistyped their email address.
-              </div>
-              
-              <p>Happy studying!</p>
-            </div>
-            <div class="footer">
-              <p>This is an automated message from AP CS Question Bank</p>
-              <p>© ${new Date().getFullYear()} AP CS Question Bank. All rights reserved.</p>
-            </div>
-          </div>
-        </body>
-      </html>
-    `,
-    text: `
-      Login to AP CS Question Bank
-      
-      Click this link to log in: ${magicLink}
-      
-      This link expires in 15 minutes.
-      
-      If you didn't request this, please ignore this email.
-    `
-  };
-
   try {
-    const info = await transporter.sendMail(mailOptions);
-    console.log('✅ Magic link sent to:', email);
-    console.log('📧 Message ID:', info.messageId);
-    return true;
-  } catch (error: any) {
-    console.error('❌ Failed to send email:', error.message);
-    if (error.code) {
-      console.error('Error code:', error.code);
+    const { data, error } = await resend.emails.send({
+      from: 'AP CS Question Bank <onboarding@resend.dev>', // Change to your domain when verified
+      to: email,
+      subject: 'Your Login Link - AP CS Question Bank',
+      html: `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <style>
+              body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+              .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+              .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
+              .content { background: #f9fafb; padding: 30px; border-radius: 0 0 10px 10px; }
+              .button { display: inline-block; padding: 15px 30px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; text-decoration: none; border-radius: 8px; font-weight: bold; margin: 20px 0; }
+              .footer { text-align: center; margin-top: 30px; color: #6b7280; font-size: 12px; }
+              .warning { background: #fef3c7; border-left: 4px solid #f59e0b; padding: 15px; margin: 20px 0; border-radius: 4px; }
+            </style>
+          </head>
+          <body>
+            <div class="container">
+              <div class="header">
+                <h1>🎓 Login to AP CS Question Bank</h1>
+              </div>
+              <div class="content">
+                <p>Hi there!</p>
+                <p>Click the button below to securely log in to your AP Computer Science Question Bank account:</p>
+                
+                <div style="text-align: center;">
+                  <a href="${magicLink}" class="button">Log In Now</a>
+                </div>
+                
+                <p>Or copy and paste this link into your browser:</p>
+                <p style="background: white; padding: 15px; border-radius: 6px; word-break: break-all; font-size: 12px;">
+                  ${magicLink}
+                </p>
+                
+                <div class="warning">
+                  <strong>⏰ This link expires in 15 minutes</strong> for your security.
+                </div>
+                
+                <div class="warning">
+                  <strong>🔒 Security Notice:</strong> If you didn't request this login link, please ignore this email. Someone may have mistyped their email address.
+                </div>
+                
+                <p>Happy studying!</p>
+              </div>
+              <div class="footer">
+                <p>This is an automated message from AP CS Question Bank</p>
+                <p>© ${new Date().getFullYear()} AP CS Question Bank. All rights reserved.</p>
+              </div>
+            </div>
+          </body>
+        </html>
+      `,
+      text: `
+        Login to AP CS Question Bank
+        
+        Click this link to log in: ${magicLink}
+        
+        This link expires in 15 minutes.
+        
+        If you didn't request this, please ignore this email.
+      `
+    });
+
+    if (error) {
+      console.error('❌ Resend API error:', error);
+      return false;
     }
+
+    console.log('✅ Magic link sent to:', email);
+    console.log('📧 Email ID:', data?.id);
+    return true;
+  } catch (error) {
+    console.error('❌ Failed to send email:', error);
     return false;
   }
 }
@@ -184,6 +161,7 @@ async function getValidToken(companyAuth: any): Promise<string> {
 async function searchContactByEmailSequential(email: string, accessToken: string, locationId: string, companyId: string): Promise<any> {
   console.log('🔄 Sequential deep search (fallback)');
   
+  // METHOD 1: Query parameter
   try {
     const queryResponse = await axios.get(
       `${GHL_API_BASE}/contacts/`,
@@ -215,6 +193,7 @@ async function searchContactByEmailSequential(email: string, accessToken: string
     console.log('⚠️ Query failed in sequential search');
   }
 
+  // METHOD 2: Pagination
   try {
     for (let page = 0; page < 20; page++) {
       const listResponse = await axios.get(
@@ -453,6 +432,7 @@ router.post('/oauth/student/request-login', async (req, res) => {
       });
     }
 
+    // Check if email exists in GHL
     let ghlContact: any = null;
     let retryCount = 0;
     const maxRetries = 2;
@@ -487,12 +467,14 @@ router.post('/oauth/student/request-login', async (req, res) => {
       console.log('❌ Email not found in TutorBoss');
       console.log('========================================\n');
       
+      // Don't reveal if email exists or not (security best practice)
       return res.json({
         success: true,
         message: 'If this email is registered, you will receive a login link shortly.'
       });
     }
 
+    // Generate magic link token (expires in 15 minutes)
     const magicToken = jwt.sign(
       {
         email: ghlContact.email,
@@ -503,6 +485,7 @@ router.post('/oauth/student/request-login', async (req, res) => {
       { expiresIn: '15m' }
     );
 
+    // Send email
     const emailSent = await sendMagicLink(ghlContact.email, magicToken);
 
     if (!emailSent) {
@@ -540,6 +523,7 @@ router.post('/oauth/student/verify-magic-link', async (req, res) => {
   try {
     console.log('🔐 ========== VERIFYING MAGIC LINK ==========');
 
+    // Verify token
     const decoded = jwt.verify(token, process.env.JWT_SECRET!) as {
       email: string;
       ghlUserId: string;
@@ -562,6 +546,7 @@ router.post('/oauth/student/verify-magic-link', async (req, res) => {
 
     const accessToken = await getValidToken(companyAuth);
 
+    // Fetch latest data from GHL
     const ghlContact = await searchContactByEmailCached(
       decoded.email,
       accessToken,
@@ -578,6 +563,7 @@ router.post('/oauth/student/verify-magic-link', async (req, res) => {
     const fullName = `${ghlContact.firstName || ''} ${ghlContact.lastName || ''}`.trim();
     const tags = ghlContact.tags || [];
     
+    // Create or update user
     let user = await prisma.user.findFirst({
       where: {
         OR: [
@@ -619,6 +605,7 @@ router.post('/oauth/student/verify-magic-link', async (req, res) => {
       where: { id: user.id }
     }) || user;
 
+    // Generate long-lived session token
     const sessionToken = jwt.sign(
       {
         userId: user.id,
@@ -668,6 +655,10 @@ router.post('/oauth/student/verify-magic-link', async (req, res) => {
   }
 });
 
+// ==========================================
+// STUDENT SIGNUP
+// ==========================================
+
 router.post('/oauth/student/signup', async (req, res) => {
   const { email, firstName, lastName, phone } = req.body;
 
@@ -700,6 +691,7 @@ router.post('/oauth/student/signup', async (req, res) => {
       });
     }
 
+    // Check if user already exists
     const existingUser = await prisma.user.findUnique({
       where: { email: email.toLowerCase() }
     });
@@ -713,6 +705,7 @@ router.post('/oauth/student/signup', async (req, res) => {
       });
     }
 
+    // Check GHL
     let existingContact: any = null;
     let retryCount = 0;
     const maxRetries = 2;
@@ -751,6 +744,7 @@ router.post('/oauth/student/signup', async (req, res) => {
       });
     }
 
+    // Create in GHL
     const contactData: any = {
       firstName,
       lastName,
@@ -786,6 +780,7 @@ router.post('/oauth/student/signup', async (req, res) => {
 
     const ghlContact = createResponse.data.contact;
 
+    // Generate magic link token
     const magicToken = jwt.sign(
       {
         email: ghlContact.email,
@@ -796,6 +791,7 @@ router.post('/oauth/student/signup', async (req, res) => {
       { expiresIn: '15m' }
     );
 
+    // Send welcome email with magic link
     const emailSent = await sendMagicLink(ghlContact.email, magicToken);
 
     if (!emailSent) {
@@ -831,6 +827,10 @@ router.post('/oauth/student/signup', async (req, res) => {
     });
   }
 });
+
+// ==========================================
+// OTHER ROUTES
+// ==========================================
 
 router.get('/oauth/me', async (req, res) => {
   try {
@@ -977,7 +977,7 @@ router.post('/oauth/sync-progress', async (req, res) => {
   }
 });
 
-// Test email endpoint
+// Test email endpoint (optional - for testing)
 router.post('/oauth/test-email', async (req, res) => {
   const { email } = req.body;
   
@@ -996,7 +996,7 @@ router.post('/oauth/test-email', async (req, res) => {
       });
     } else {
       res.status(500).json({ 
-        error: 'Failed to send email. Check your Gmail configuration and app password.' 
+        error: 'Failed to send email. Check your Resend API key.' 
       });
     }
   } catch (error: any) {

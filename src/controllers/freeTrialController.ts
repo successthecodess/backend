@@ -38,11 +38,16 @@ export const getFreeTrialQuestion = asyncHandler(async (req: Request, res: Respo
 
   console.log('📥 Get free trial question:', { sessionId, questionNumber });
 
+  // OPTIMIZED: Only select what we need
   const session = await prisma.studySession.findUnique({
     where: { id: sessionId },
+    select: {
+      id: true,
+      sessionType: true,
+      metadata: true, // Get stored question order
+    },
   });
 
-  // Use SessionType enum instead of string
   if (!session || session.sessionType !== SessionType.FREE_TRIAL) {
     return res.status(404).json({
       status: 'error',
@@ -50,17 +55,37 @@ export const getFreeTrialQuestion = asyncHandler(async (req: Request, res: Respo
     });
   }
 
-  // Get all questions again (they're always the same)
-  const questions = await freeTrialService.getFreeTrialQuestions();
+  // Get question order from metadata
+  const questionOrder = (session.metadata as any)?.questionOrder || [];
   const index = parseInt(questionNumber) - 1;
-  const question = questions[index];
+  const questionId = questionOrder[index];
 
-  if (!question) {
+  if (!questionId) {
     return res.json({
       status: 'success',
       data: { question: null },
     });
   }
+
+  // Fetch only the specific question
+  const question = await prisma.question.findUnique({
+    where: { id: questionId },
+    include: {
+      unit: {
+        select: {
+          id: true,
+          unitNumber: true,
+          name: true,
+        },
+      },
+      topic: {
+        select: {
+          id: true,
+          name: true,
+        },
+      },
+    },
+  });
 
   res.json({
     status: 'success',
@@ -88,13 +113,21 @@ export const submitFreeTrialAnswer = asyncHandler(async (req: Request, res: Resp
   const session = await prisma.studySession.update({
     where: { id: sessionId },
     data: updateData,
+    select: {
+      id: true,
+      totalQuestions: true,
+      correctAnswers: true,
+    },
   });
 
   // Check if trial is complete (10 questions)
   const isComplete = session.totalQuestions >= 10;
 
   if (isComplete) {
-    await freeTrialService.completeFreeTrialSession(userId, sessionId);
+    // Run completion async (don't wait for GHL tag)
+    freeTrialService.completeFreeTrialSession(userId, sessionId).catch(err =>
+      console.error('Failed to complete trial:', err)
+    );
   }
 
   res.json({

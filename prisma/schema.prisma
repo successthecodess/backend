@@ -287,6 +287,8 @@ model StudySession {
   notes           String?
   createdAt       DateTime           @default(now())
   responses       QuestionResponse[]
+  aiSummary     String?
+  metadata         Json?
   user            User               @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, startedAt])
