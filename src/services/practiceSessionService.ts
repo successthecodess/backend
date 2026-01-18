@@ -1,183 +1,184 @@
 import prisma from '../config/database.js';
-import questionService from './questionService.js';
-import adaptiveLearningService from './adaptiveLearningService.js';
 import { AppError } from '../middleware/errorHandler.js';
+import { DifficultyLevel } from '@prisma/client';
+
+// Question type for cache
+interface CachedQuestion {
+  id: string;
+  questionText: string;
+  codeSnippet: string | null;
+  options: any;
+  correctAnswer: string;
+  explanation: string;
+  difficulty: DifficultyLevel;
+  topicId: string | null;
+  topic: { id: string; name: string } | null;
+}
+
+// Cache entry type
+interface CacheEntry {
+  questions: CachedQuestion[];
+  timestamp: number;
+}
+
+// In-memory cache for questions (per unit)
+const questionCache: Map<string, CacheEntry> = new Map();
+
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
 export class PracticeSessionService {
   private readonly QUESTIONS_PER_SESSION = 40;
 
   /**
-   * Ensure user exists in database
+   * Get cached questions for a unit or fetch fresh
    */
-  private async ensureUserExists(userId: string, userEmail?: string, userName?: string) {
-    console.log('Ensuring user exists:', userId);
-    
-    let user = await prisma.user.findUnique({
-      where: { id: userId },
-    });
+  private async getCachedQuestions(unitId: string, topicId?: string): Promise<CachedQuestion[]> {
+    const cacheKey = `${unitId}_${topicId || 'all'}`;
+    const cached = questionCache.get(cacheKey);
 
-    if (user) {
-      const updates: any = {
-        lastActive: new Date(),
-      };
-
-      if (userName && userName !== user.name) {
-        updates.name = userName;
-      }
-
-      if (userEmail && userEmail !== user.email) {
-        const emailExists = await prisma.user.findFirst({
-          where: {
-            email: userEmail,
-            id: { not: userId },
-          },
-        });
-
-        if (!emailExists) {
-          updates.email = userEmail;
-        }
-      }
-
-      if (Object.keys(updates).length > 1) {
-        user = await prisma.user.update({
-          where: { id: userId },
-          data: updates,
-        });
-        console.log('✅ User updated:', user.id);
-      } else {
-        console.log('✅ User found (no updates needed):', user.id);
-      }
-    } else {
-      const email = userEmail || `${userId}-${Date.now()}@clerk.user`;
-      
-      user = await prisma.user.create({
-        data: {
-          id: userId,
-          email: email,
-          name: userName,
-          password: 'clerk-managed',
-        },
-      });
-      console.log('✅ User created:', user.id);
+    if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+      return cached.questions;
     }
 
-    return user;
+    const where: {
+      unitId: string;
+      approved: boolean;
+      isActive: boolean;
+      topicId?: string;
+    } = {
+      unitId,
+      approved: true,
+      isActive: true,
+    };
+
+    if (topicId) {
+      where.topicId = topicId;
+    }
+
+    const questions = await prisma.question.findMany({
+      where,
+      select: {
+        id: true,
+        questionText: true,
+        codeSnippet: true,
+        options: true,
+        correctAnswer: true,
+        explanation: true,
+        difficulty: true,
+        topicId: true,
+        topic: { select: { id: true, name: true } },
+      },
+    });
+
+    questionCache.set(cacheKey, {
+      questions,
+      timestamp: Date.now(),
+    });
+
+    return questions;
   }
 
   /**
-   * Start a new practice session
+   * Ensure user exists - optimized with upsert
+   */
+  private async ensureUserExists(userId: string, userEmail?: string, userName?: string) {
+    const email = userEmail || `${userId}-${Date.now()}@clerk.user`;
+
+    return prisma.user.upsert({
+      where: { id: userId },
+      update: {
+        lastActive: new Date(),
+        ...(userName && { name: userName }),
+      },
+      create: {
+        id: userId,
+        email,
+        name: userName,
+        password: 'clerk-managed',
+      },
+    });
+  }
+
+  /**
+   * Start a new practice session - OPTIMIZED
    */
   async startSession(
-    userId: string, 
-    unitId: string, 
-    topicId?: string, 
-    userEmail?: string, 
+    userId: string,
+    unitId: string,
+    topicId?: string,
+    userEmail?: string,
     userName?: string,
     targetQuestions: number = 40
   ) {
-    console.log('🎯 Starting practice session:', { userId, unitId, topicId, targetQuestions });
-
-    try {
-      await this.ensureUserExists(userId, userEmail, userName);
-
-      const unit = await prisma.unit.findUnique({
+    // Run user creation, unit fetch, and questions fetch in parallel
+    const [, unit, questions] = await Promise.all([
+      this.ensureUserExists(userId, userEmail, userName),
+      prisma.unit.findUnique({
         where: { id: unitId },
-      });
+        select: { id: true, name: true, unitNumber: true },
+      }),
+      this.getCachedQuestions(unitId, topicId),
+    ]);
 
-      if (!unit) {
-        throw new AppError('Unit not found', 404);
-      }
+    if (!unit) {
+      throw new AppError('Unit not found', 404);
+    }
 
-      console.log('✅ Unit found:', unit.name);
+    if (questions.length === 0) {
+      throw new AppError(
+        `No approved questions available for ${unit.name}. Please contact your administrator to add questions.`,
+        404
+      );
+    }
 
-      const hasQuestions = await questionService.hasQuestions(unitId);
-      
-      if (!hasQuestions) {
-        throw new AppError(
-          `No approved questions available for ${unit.name}. Please contact your administrator to add questions.`,
-          404
-        );
-      }
+    // Get user's progress for difficulty recommendation
+    const progress = await prisma.progress.findFirst({
+      where: { userId, unitId, topicId: topicId ?? null },
+      select: { currentDifficulty: true },
+    });
 
-      const counts = await questionService.getQuestionCounts(unitId);
-      console.log('📊 Question counts:', counts);
+    const studentLevel = progress?.currentDifficulty || 'EASY';
 
-      // Get student's current difficulty level
-      console.log('\n📊 FETCHING STUDENT STARTING LEVEL...');
-      const studentLevel = await adaptiveLearningService.getRecommendedDifficulty(
+    // Create session
+    const session = await prisma.studySession.create({
+      data: {
         userId,
         unitId,
-        topicId
-      );
+        topicId: topicId ?? null,
+        sessionType: 'PRACTICE',
+        totalQuestions: 0,
+        correctAnswers: 0,
+        targetQuestions,
+      },
+    });
 
-      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-      console.log('🎯 STUDENT STARTING LEVEL:', studentLevel);
-      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+    // Get first question from cached questions
+    const questionsAtLevel = questions.filter((q) => q.difficulty === studentLevel);
+    const question =
+      questionsAtLevel.length > 0
+        ? questionsAtLevel[Math.floor(Math.random() * questionsAtLevel.length)]
+        : questions[Math.floor(Math.random() * questions.length)];
 
-      const session = await prisma.studySession.create({
-        data: {
-          userId,
-          unitId,
-          topicId: topicId === undefined ? null : topicId,
-          sessionType: 'PRACTICE',
-          totalQuestions: 0,
-          correctAnswers: 0,
-          targetQuestions: targetQuestions,
-        },
-      });
+    // Get question counts from cached data
+    const counts = {
+      total: questions.length,
+      easy: questions.filter((q) => q.difficulty === 'EASY').length,
+      medium: questions.filter((q) => q.difficulty === 'MEDIUM').length,
+      hard: questions.filter((q) => q.difficulty === 'HARD').length,
+    };
 
-      console.log('✅ Session created:', session.id);
-
-      // Get first question matching student's level (RANDOM)
-      console.log(`📚 Requesting random ${studentLevel} question...`);
-      let question = await questionService.getRandomQuestion(unitId, studentLevel, [], topicId);
-
-      if (!question) {
-        // If no questions at student's level, try nearby difficulties
-        console.log(`⚠️ No ${studentLevel} questions, trying alternatives...`);
-        const difficulties = ['EASY', 'MEDIUM', 'HARD'];
-        const currentIndex = difficulties.indexOf(studentLevel);
-        
-        // Try one level down first, then one level up
-        const tryOrder = [
-          currentIndex - 1,
-          currentIndex + 1,
-        ].filter(i => i >= 0 && i < difficulties.length);
-
-        for (const index of tryOrder) {
-          question = await questionService.getRandomQuestion(unitId, difficulties[index] as any, [], topicId);
-          if (question) {
-            console.log(`⚠️ Using random ${difficulties[index]} question (fallback)\n`);
-            break;
-          }
-        }
-
-        if (!question) {
-          throw new AppError(
-            `No questions available for ${unit.name}. Please contact your administrator to add questions.`,
-            404
-          );
-        }
-      } else {
-        console.log(`✅ First question: ${question.difficulty} (student level: ${studentLevel})\n`);
-      }
-
-      return {
-        session,
-        question,
-        recommendedDifficulty: studentLevel,
-        questionsRemaining: targetQuestions - 1,
-        totalQuestions: targetQuestions,
-        questionCounts: counts,
-      };
-    } catch (error) {
-      console.error('❌ Error in startSession:', error);
-      throw error;
-    }
+    return {
+      session,
+      question,
+      recommendedDifficulty: studentLevel,
+      questionsRemaining: targetQuestions - 1,
+      totalQuestions: targetQuestions,
+      questionCounts: counts,
+    };
   }
 
   /**
-   * Get next question - ALWAYS MATCHES STUDENT'S CURRENT LEVEL with RANDOM SELECTION
+   * Get next question - OPTIMIZED using cache
    */
   async getNextQuestion(
     userId: string,
@@ -185,183 +186,68 @@ export class PracticeSessionService {
     unitId: string,
     answeredQuestionIds: string[],
     topicId?: string
-  ) {
-    console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    console.log('🎯 GET NEXT QUESTION');
-    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    console.log('User ID:', userId);
-    console.log('Session ID:', sessionId);
-    console.log('Unit ID:', unitId);
-    console.log('Topic ID:', topicId);
-    console.log('Answered count:', answeredQuestionIds.length);
-
-    try {
-      const session = await prisma.studySession.findUnique({
+  ): Promise<CachedQuestion | null> {
+    // Get session and progress in parallel
+    const [session, progress] = await Promise.all([
+      prisma.studySession.findUnique({
         where: { id: sessionId },
-      });
+        select: { totalQuestions: true, targetQuestions: true },
+      }),
+      prisma.progress.findFirst({
+        where: { userId, unitId, topicId: topicId ?? null },
+        select: { currentDifficulty: true },
+      }),
+    ]);
 
-      if (!session) {
-        throw new AppError('Session not found', 404);
-      }
-
-      const targetQuestions = session.targetQuestions || this.QUESTIONS_PER_SESSION;
-
-      if (session.totalQuestions >= targetQuestions) {
-        console.log('✅ Session complete!');
-        return null;
-      }
-
-      console.log(`Questions remaining: ${targetQuestions - session.totalQuestions}`);
-
-      // CRITICAL: Get FRESH student difficulty from database
-      console.log('\n📊 FETCHING FRESH STUDENT LEVEL FROM DATABASE...');
-      
-      // Get the actual progress record from database
-      const progressRecord = await prisma.progress.findFirst({
-        where: {
-          userId,
-          unitId,
-          topicId: topicId === undefined ? null : topicId,
-        },
-      });
-
-      if (!progressRecord) {
-        console.log('   → No progress found - defaulting to EASY');
-        const studentLevel = 'EASY';
-        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-        console.log('🎯 STUDENT CURRENT LEVEL:', studentLevel);
-        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
-
-        // 🎲 RANDOM SELECTION
-        console.log(`📚 Fetching ALL ${studentLevel} questions for random selection...`);
-        const allQuestions = await questionService.getAllQuestionsAtLevel(
-          unitId,
-          studentLevel as any,
-          answeredQuestionIds,
-          topicId
-        );
-
-        if (allQuestions.length === 0) {
-          console.log('⚠️ No questions available at EASY level');
-          return null;
-        }
-
-        // Randomly select one
-        const randomIndex = Math.floor(Math.random() * allQuestions.length);
-        const question = allQuestions[randomIndex];
-
-        console.log(`🎲 Randomly selected question ${randomIndex + 1} of ${allQuestions.length}`);
-        console.log('✅ Question found:', question.difficulty);
-
-        return question;
-      }
-
-      const studentLevel = progressRecord.currentDifficulty;
-
-      console.log('   → Database Progress:');
-      console.log('      - Current Difficulty:', progressRecord.currentDifficulty);
-      console.log('      - Total Attempts:', progressRecord.totalAttempts);
-      console.log('      - Mastery:', progressRecord.masteryLevel + '%');
-      console.log('      - Consecutive Correct:', progressRecord.consecutiveCorrect);
-      console.log('      - Consecutive Wrong:', progressRecord.consecutiveWrong);
-
-      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-      console.log('🎯 STUDENT CURRENT LEVEL:', studentLevel);
-      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
-
-      // 🎲 RANDOM SELECTION - Get ALL questions matching student's EXACT level
-      console.log(`📚 Fetching ALL ${studentLevel} questions for random selection...`);
-      let allQuestions = await questionService.getAllQuestionsAtLevel(
-        unitId,
-        studentLevel as any,
-        answeredQuestionIds,
-        topicId
-      );
-
-      if (allQuestions.length > 0) {
-        // Randomly select one from the pool
-        const randomIndex = Math.floor(Math.random() * allQuestions.length);
-        const question = allQuestions[randomIndex];
-
-        console.log('\n✅ QUESTION RETRIEVED:');
-        console.log(`   - 🎲 Randomly selected ${randomIndex + 1} of ${allQuestions.length} available questions`);
-        console.log('   - Question ID:', question.id);
-        console.log('   - Question Difficulty:', question.difficulty);
-        console.log('   - Student Level:', studentLevel);
-        
-        if (question.difficulty === studentLevel) {
-          console.log('   - MATCH: ✅ YES - PERFECT!');
-        } else {
-          console.log('   - MATCH: ❌ NO - BUG DETECTED!');
-          console.log('   - Expected:', studentLevel);
-          console.log('   - Got:', question.difficulty);
-        }
-        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
-
-        return question;
-      } else {
-        console.log(`\n⚠️ No ${studentLevel} questions available (${answeredQuestionIds.length} excluded)`);
-        console.log('Trying fallback...\n');
-        
-        const difficulties = ['EASY', 'MEDIUM', 'HARD'];
-        const currentIndex = difficulties.indexOf(studentLevel);
-        
-        // Try closest difficulties first
-        const fallbackOrder = [
-          currentIndex - 1,
-          currentIndex + 1,
-          currentIndex - 2,
-          currentIndex + 2,
-        ].filter(i => i >= 0 && i < difficulties.length);
-
-        for (const index of fallbackOrder) {
-          const fallbackLevel = difficulties[index] as any;
-          console.log(`   Trying ${fallbackLevel}...`);
-          
-          allQuestions = await questionService.getAllQuestionsAtLevel(
-            unitId,
-            fallbackLevel,
-            answeredQuestionIds,
-            topicId
-          );
-          
-          if (allQuestions.length > 0) {
-            // Randomly select from fallback pool
-            const randomIndex = Math.floor(Math.random() * allQuestions.length);
-            const question = allQuestions[randomIndex];
-
-            console.log(`   ⚠️ Randomly selected ${randomIndex + 1} of ${allQuestions.length} ${fallbackLevel} questions`);
-            console.log(`   ⚠️ Using ${question.difficulty} question (fallback from ${studentLevel})`);
-            console.log(`   ⚠️ THIS IS A FALLBACK - NOT ENOUGH ${studentLevel} QUESTIONS\n`);
-            
-            return question;
-          }
-        }
-      }
-
-      console.log('❌ No more questions available');
-      
-      const totalQuestions = await questionService.getQuestionCounts(unitId);
-      
-      if (answeredQuestionIds.length >= totalQuestions.total) {
-        throw new AppError(
-          `You've completed all ${totalQuestions.total} available questions for this unit! Great job! 🎉`,
-          404
-        );
-      } else {
-        throw new AppError(
-          'No more questions available at this time.',
-          404
-        );
-      }
-    } catch (error) {
-      console.error('❌ Error in getNextQuestion:', error);
-      throw error;
+    if (!session) {
+      throw new AppError('Session not found', 404);
     }
+
+    const targetQuestions = session.targetQuestions || this.QUESTIONS_PER_SESSION;
+    if (session.totalQuestions >= targetQuestions) {
+      return null;
+    }
+
+    const studentLevel = progress?.currentDifficulty || 'EASY';
+
+    // Get questions from cache
+    const allQuestions = await this.getCachedQuestions(unitId, topicId);
+
+    // Filter out answered questions using Set for O(1) lookup
+    const answeredSet = new Set(answeredQuestionIds);
+    const availableQuestions = allQuestions.filter((q) => !answeredSet.has(q.id));
+
+    if (availableQuestions.length === 0) {
+      return null;
+    }
+
+    // Try to get question at student's level
+    const questionsAtLevel = availableQuestions.filter((q) => q.difficulty === studentLevel);
+
+    if (questionsAtLevel.length > 0) {
+      return questionsAtLevel[Math.floor(Math.random() * questionsAtLevel.length)];
+    }
+
+    // Fallback: try adjacent difficulties
+    const difficulties: DifficultyLevel[] = ['EASY', 'MEDIUM', 'HARD'];
+    const currentIndex = difficulties.indexOf(studentLevel);
+    const tryOrder = [currentIndex - 1, currentIndex + 1].filter((i) => i >= 0 && i < 3);
+
+    for (const index of tryOrder) {
+      const fallbackQuestions = availableQuestions.filter(
+        (q) => q.difficulty === difficulties[index]
+      );
+      if (fallbackQuestions.length > 0) {
+        return fallbackQuestions[Math.floor(Math.random() * fallbackQuestions.length)];
+      }
+    }
+
+    // Last resort: any available question
+    return availableQuestions[Math.floor(Math.random() * availableQuestions.length)];
   }
 
   /**
-   * Submit an answer for a question
+   * Submit answer - OPTIMIZED with parallel operations
    */
   async submitAnswer(
     userId: string,
@@ -370,166 +256,231 @@ export class PracticeSessionService {
     userAnswer: string,
     timeSpent?: number
   ) {
-    console.log('\n📝 SUBMITTING ANSWER');
-    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    console.log('User ID:', userId);
-    console.log('Session ID:', sessionId);
-    console.log('Question ID:', questionId);
-    console.log('Answer:', userAnswer);
+    // Get session first
+    const session = await prisma.studySession.findUnique({
+      where: { id: sessionId },
+      select: { unitId: true, topicId: true },
+    });
 
-    try {
-      // Get session to know which unit we're in
-      const session = await prisma.studySession.findUnique({
-        where: { id: sessionId },
+    if (!session) {
+      throw new AppError('Session not found', 404);
+    }
+
+    if (!session.unitId) {
+      throw new AppError('Session has no unit assigned', 400);
+    }
+
+    // Try to get question from cache first (much faster)
+    const allQuestions = await this.getCachedQuestions(
+      session.unitId,
+      session.topicId ?? undefined
+    );
+    
+    let question = allQuestions.find((q) => q.id === questionId);
+
+    // Fallback to DB if not in cache
+    if (!question) {
+      const dbQuestion = await prisma.question.findUnique({
+        where: { id: questionId },
+        select: {
+          id: true,
+          questionText: true,
+          codeSnippet: true,
+          options: true,
+          correctAnswer: true,
+          explanation: true,
+          difficulty: true,
+          topicId: true,
+          topic: { select: { id: true, name: true } },
+        },
       });
-
-      if (!session) {
-        throw new AppError('Session not found', 404);
-      }
-
-      console.log('Session Unit ID:', session.unitId);
-      console.log('Session Topic ID:', session.topicId);
-
-      // Submit answer to question service
-      const result = await questionService.submitAnswer(
-        userId,
-        questionId,
-        userAnswer,
-        timeSpent
-      );
-
-      console.log('✅ Answer result:', result.isCorrect ? '✅ Correct' : '❌ Incorrect');
-
-      // Update session statistics
-      const updateData: any = {
-        totalQuestions: { increment: 1 },
-      };
-
-      if (result.isCorrect) {
-        updateData.correctAnswers = { increment: 1 };
-      }
-
-      const updatedSession = await prisma.studySession.update({
-        where: { id: sessionId },
-        data: updateData,
-      });
-
-      console.log('✅ Session updated');
-
-      // CRITICAL: Use session's unitId and topicId for progress, NOT question's!
-      console.log('\n📊 Updating student progress...');
-      console.log('   Using Unit ID from SESSION:', session.unitId);
-      console.log('   Using Topic ID from SESSION:', session.topicId);
       
-      const progress = await adaptiveLearningService.updateProgress(
-        userId,
-        questionId,
-        result.isCorrect,
-        timeSpent
-      );
+      if (!dbQuestion) {
+        throw new AppError('Question not found', 404);
+      }
+      
+      question = dbQuestion;
+    }
 
-      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-      console.log('✅ PROGRESS UPDATED - NEW LEVEL:', progress.currentDifficulty);
-      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+    const isCorrect =
+      userAnswer.trim().toLowerCase() === question.correctAnswer.trim().toLowerCase();
 
-      return {
-        ...result,
-        session: updatedSession,
-        progress,
-      };
-    } catch (error) {
-      console.error('❌ Error in submitAnswer:', error);
-      throw error;
+    // Get current progress for difficulty calculation
+    const currentProgress = await prisma.progress.findFirst({
+      where: { userId, unitId: session.unitId, topicId: session.topicId },
+      select: { currentDifficulty: true, consecutiveCorrect: true, consecutiveWrong: true },
+    });
+
+    // Calculate new difficulty
+    const newDifficulty = this.calculateNewDifficulty(currentProgress, isCorrect);
+
+    // Run all updates in parallel
+    const [, updatedSession, updatedProgress] = await Promise.all([
+      // Save response
+      prisma.questionResponse.create({
+        data: {
+          userId,
+          questionId,
+          sessionId,
+          userAnswer,
+          isCorrect,
+          timeSpent,
+          difficultyAtTime: question.difficulty,
+        },
+      }),
+      // Update session
+      prisma.studySession.update({
+        where: { id: sessionId },
+        data: {
+          totalQuestions: { increment: 1 },
+          ...(isCorrect && { correctAnswers: { increment: 1 } }),
+        },
+      }),
+      // Update progress - handle null topicId properly
+      this.upsertProgress(userId, session.unitId, session.topicId, isCorrect, newDifficulty),
+    ]);
+
+    return {
+      isCorrect,
+      correctAnswer: question.correctAnswer,
+      explanation: question.explanation,
+      userAnswer,
+      session: updatedSession,
+      progress: updatedProgress,
+    };
+  }
+
+  /**
+   * Upsert progress with proper null handling for topicId
+   */
+  private async upsertProgress(
+    userId: string,
+    unitId: string,
+    topicId: string | null,
+    isCorrect: boolean,
+    newDifficulty: DifficultyLevel
+  ) {
+    // First try to find existing progress
+    const existingProgress = await prisma.progress.findFirst({
+      where: { userId, unitId, topicId },
+    });
+
+    if (existingProgress) {
+      // Update existing
+      return prisma.progress.update({
+        where: { id: existingProgress.id },
+        data: {
+          totalAttempts: { increment: 1 },
+          ...(isCorrect && { correctAttempts: { increment: 1 } }),
+          consecutiveCorrect: isCorrect ? { increment: 1 } : 0,
+          consecutiveWrong: isCorrect ? 0 : { increment: 1 },
+          lastPracticed: new Date(),
+          currentDifficulty: newDifficulty,
+        },
+      });
+    } else {
+      // Create new
+      return prisma.progress.create({
+        data: {
+          userId,
+          unitId,
+          topicId,
+          totalAttempts: 1,
+          correctAttempts: isCorrect ? 1 : 0,
+          consecutiveCorrect: isCorrect ? 1 : 0,
+          consecutiveWrong: isCorrect ? 0 : 1,
+          currentDifficulty: 'EASY',
+        },
+      });
     }
   }
 
   /**
-   * End a practice session
+   * Calculate new difficulty based on performance - synchronous version
+   */
+  private calculateNewDifficulty(
+    currentProgress: {
+      currentDifficulty: DifficultyLevel;
+      consecutiveCorrect: number;
+      consecutiveWrong: number;
+    } | null,
+    wasCorrect: boolean
+  ): DifficultyLevel {
+    if (!currentProgress) return 'EASY';
+
+    const current = currentProgress.currentDifficulty;
+    const difficulties: DifficultyLevel[] = ['EASY', 'MEDIUM', 'HARD'];
+    const currentIndex = difficulties.indexOf(current);
+
+    if (wasCorrect && currentProgress.consecutiveCorrect >= 2) {
+      // Level up after 3 correct in a row
+      return difficulties[Math.min(currentIndex + 1, 2)];
+    } else if (!wasCorrect && currentProgress.consecutiveWrong >= 1) {
+      // Level down after 2 wrong in a row
+      return difficulties[Math.max(currentIndex - 1, 0)];
+    }
+
+    return current;
+  }
+
+  /**
+   * End a practice session - OPTIMIZED
    */
   async endSession(sessionId: string) {
-    console.log('🏁 Ending session:', sessionId);
+    const session = await prisma.studySession.findUnique({
+      where: { id: sessionId },
+      select: {
+        id: true,
+        startedAt: true,
+        totalQuestions: true,
+        correctAnswers: true,
+      },
+    });
 
-    try {
-      const session = await prisma.studySession.findUnique({
-        where: { id: sessionId },
-        include: {
-          responses: {
-            include: {
-              question: {
-                include: {
-                  topic: true,
-                },
-              },
-            },
-          },
-        },
-      });
+    if (!session) {
+      throw new AppError('Session not found', 404);
+    }
 
-      if (!session) {
-        throw new AppError('Session not found', 404);
-      }
+    const duration = Math.floor(
+      (new Date().getTime() - new Date(session.startedAt).getTime()) / 1000
+    );
 
-      // Calculate session duration
-      const duration = Math.floor(
-        (new Date().getTime() - new Date(session.startedAt).getTime()) / 1000
-      );
+    const averageTime = session.totalQuestions > 0 ? duration / session.totalQuestions : 0;
+    const accuracyRate =
+      session.totalQuestions > 0 ? (session.correctAnswers / session.totalQuestions) * 100 : 0;
 
-      // Calculate average time per question
-      const averageTime = session.totalQuestions > 0
-        ? duration / session.totalQuestions
-        : 0;
+    const updatedSession = await prisma.studySession.update({
+      where: { id: sessionId },
+      data: {
+        endedAt: new Date(),
+        totalDuration: duration,
+        averageTime,
+        accuracyRate,
+      },
+    });
 
-      // Calculate accuracy rate
-      const accuracyRate = session.totalQuestions > 0
-        ? (session.correctAnswers / session.totalQuestions) * 100
-        : 0;
-
-      // Update session with final statistics
-      const updatedSession = await prisma.studySession.update({
-        where: { id: sessionId },
-        data: {
-          endedAt: new Date(),
-          totalDuration: duration,
-          averageTime,
-          accuracyRate,
-        },
-      });
-
-      console.log('✅ Session ended successfully');
-
-      // Prepare summary
-      const summary = {
+    return {
+      session: updatedSession,
+      summary: {
         totalQuestions: session.totalQuestions,
         correctAnswers: session.correctAnswers,
         accuracyRate: Math.round(accuracyRate),
         totalDuration: duration,
         averageTime: Math.round(averageTime),
-        responses: session.responses.map((r) => ({
-          questionId: r.questionId,
-          isCorrect: r.isCorrect,
-          timeSpent: r.timeSpent || 0,
-          topic: r.question.topic?.name || 'General',
-        })),
-      };
-
-      return {
-        session: updatedSession,
-        summary,
-      };
-    } catch (error) {
-      console.error('❌ Error in endSession:', error);
-      throw error;
-    }
+      },
+    };
   }
 
   /**
-   * Get session statistics
+   * Get session statistics - OPTIMIZED
    */
   async getSessionStats(sessionId: string) {
     const session = await prisma.studySession.findUnique({
       where: { id: sessionId },
-      include: {
-        responses: true,
+      select: {
+        totalQuestions: true,
+        correctAnswers: true,
+        _count: { select: { responses: true } },
       },
     });
 
@@ -540,11 +491,21 @@ export class PracticeSessionService {
     return {
       totalQuestions: session.totalQuestions,
       correctAnswers: session.correctAnswers,
-      accuracy: session.totalQuestions > 0
-        ? (session.correctAnswers / session.totalQuestions) * 100
-        : 0,
-      responsesCount: session.responses.length,
+      accuracy:
+        session.totalQuestions > 0 ? (session.correctAnswers / session.totalQuestions) * 100 : 0,
+      responsesCount: session._count.responses,
     };
+  }
+
+  /**
+   * Invalidate question cache for a unit
+   */
+  invalidateCache(unitId: string) {
+    for (const key of questionCache.keys()) {
+      if (key.startsWith(unitId)) {
+        questionCache.delete(key);
+      }
+    }
   }
 }
 

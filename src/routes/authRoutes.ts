@@ -22,7 +22,7 @@ async function sendMagicLink(email: string, token: string) {
   
   try {
     const { data, error } = await resend.emails.send({
-      from: 'AP CS Question Bank <onboarding@resend.dev>', // Change to your domain when verified
+      from: 'AP CS Question Bank <noreply@csaprep.aceapcomputerscience.com>', // Change to your domain when verified
       to: email,
       subject: 'Your Login Link - AP CS Question Bank',
       html: `
@@ -893,6 +893,7 @@ router.get('/oauth/me', async (req, res) => {
   }
 });
 
+// Find and update this route:
 router.get('/oauth/my-access', async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
@@ -905,9 +906,14 @@ router.get('/oauth/my-access', async (req, res) => {
     const decoded = jwt.verify(token, process.env.JWT_SECRET!) as { userId: string };
 
     const access = await checkUserAccess(decoded.userId);
+    
+    console.log('🔐 Access check for user:', decoded.userId);
+    console.log('   Tags:', access.accessTier);
+    console.log('   hasPracticeTestAccess:', access.hasBasicAccess);
 
     res.json(access);
   } catch (error) {
+    console.error('Access check error:', error);
     res.status(401).json({ error: 'Invalid token' });
   }
 });

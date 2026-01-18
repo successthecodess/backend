@@ -202,6 +202,10 @@ model Question {
   @@index([topicId, difficulty])
   @@index([approved, isActive])
   @@index([aiGenerated])
+  @@index([unitId, approved, difficulty])
+  @@index([unitId, approved])
+  @@index([unitId, approved, isActive, difficulty])
+  @@index([unitId, topicId, approved, isActive])
   @@map("questions")
 }
 
@@ -235,6 +239,7 @@ model Progress {
   @@unique([userId, unitId, topicId], map: "userId_unitId_topicId")
   @@index([userId, masteryLevel])
   @@index([nextReviewDate])
+  @@index([userId, unitId, topicId])
   @@map("progress")
 }
 
@@ -292,6 +297,7 @@ model StudySession {
   user            User               @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, startedAt])
+  @@index([userId, endedAt])
   @@index([sessionType])
   @@map("study_sessions")
 }
