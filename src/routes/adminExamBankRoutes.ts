@@ -2,7 +2,6 @@ import express from 'express';
 import {
   getExamUnits,
   getExamBankQuestions,
-  createMCQQuestion,
   createFRQQuestion,
   updateExamBankQuestion,
   deleteExamBankQuestion,
@@ -21,7 +20,6 @@ router.get('/units', getExamUnits);
 // Exam bank questions
 router.get('/questions', getExamBankQuestions);
 router.get('/questions/counts', getQuestionCounts);
-router.post('/questions/mcq', createMCQQuestion);
 router.post('/questions/frq', createFRQQuestion);
 router.put('/questions/:questionId', updateExamBankQuestion);
 router.delete('/questions/:questionId', deleteExamBankQuestion);

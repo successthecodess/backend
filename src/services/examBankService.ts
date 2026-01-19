@@ -190,11 +190,6 @@ export class ExamBankService {
     console.log('🗑️ Question cache invalidated');
   }
 
-  // ... rest of your methods (createMCQQuestion, createFRQQuestion, etc.)
-  // Add this.invalidateCache() call in create/update/delete methods
-
-
-
   async createFRQQuestion(data: {
     unitId: string;
     frqType: FRQType;

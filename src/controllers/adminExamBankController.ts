@@ -30,25 +30,6 @@ export const getExamBankQuestions = asyncHandler(async (req: Request, res: Respo
   });
 });
 
-// Create MCQ question
-export const createMCQQuestion = asyncHandler(async (req: Request, res: Response) => {
-  const { unitId, questionText, options, correctAnswer, explanation, difficulty, approved } = req.body;
-
-  const question = await examBankService.createMCQQuestion({
-    unitId,
-    questionText,
-    options,
-    correctAnswer,
-    explanation,
-    difficulty,
-    approved,
-  });
-
-  res.status(201).json({
-    status: 'success',
-    data: { question },
-  });
-});
 
 // Create FRQ question
 // Create FRQ question
