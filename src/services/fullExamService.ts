@@ -5,80 +5,97 @@ import { Prisma } from '@prisma/client';
 
 export class FullExamService {
   /**
-   * Start a new full exam attempt (unlimited retakes with random questions)
+   * Start a new full exam attempt - OPTIMIZED
+   * Uses parallel queries and bulk inserts for speed
    */
   async startExam(userId: string) {
     console.log('🎓 Starting full exam for user:', userId);
+    const startTime = Date.now();
 
     try {
-      // Get user's previous attempt count
-      const previousAttempts = await prisma.fullExamAttempt.count({
-        where: { userId },
-      });
+      // Run ALL independent queries in parallel
+      const [previousAttempts, mcqQuestions, frqQuestions] = await Promise.all([
+        // Get attempt count
+        prisma.fullExamAttempt.count({ where: { userId } }),
+        // Get random MCQ questions (uses cache from examBankService)
+        examBankService.getRandomMCQForExam(),
+        // Get random FRQ questions
+        examBankService.getFRQForExam(),
+      ]);
+
+      console.log(`⏱️ Parallel queries completed in ${Date.now() - startTime}ms`);
 
       const attemptNumber = previousAttempts + 1;
       console.log(`📊 This is attempt #${attemptNumber} for user ${userId}`);
+      console.log(`✅ Selected ${mcqQuestions.length} MCQ and ${frqQuestions.length} FRQ questions`);
 
-      // Get random MCQ questions (42 questions, distributed across units)
-      const mcqQuestions = await examBankService.getRandomMCQForExam();
-      console.log(`✅ Selected ${mcqQuestions.length} random MCQ questions`);
+      if (mcqQuestions.length === 0) {
+        throw new AppError('No MCQ questions available. Please add questions to the question bank first.', 400);
+      }
 
-      // Get random FRQ questions (4 questions, one of each type)
-      const frqQuestions = await examBankService.getFRQForExam();
-      console.log(`✅ Selected ${frqQuestions.length} random FRQ questions`);
+      // Create exam attempt and all responses in a SINGLE transaction with createMany
+      const createStart = Date.now();
 
-      // Create exam attempt with attempt number
-      const examAttempt = await prisma.fullExamAttempt.create({
-        data: {
-          userId,
-          status: 'IN_PROGRESS',
-          attemptNumber,
-        },
-      });
+      const examAttempt = await prisma.$transaction(async (tx) => {
+        // Create the exam attempt
+        const attempt = await tx.fullExamAttempt.create({
+          data: {
+            userId,
+            status: 'IN_PROGRESS',
+            attemptNumber,
+          },
+        });
 
-      // Create MCQ responses (empty initially)
-      await Promise.all(
-        mcqQuestions.map((question, index) =>
-          prisma.examAttemptMCQ.create({
-            data: {
-              examAttemptId: examAttempt.id,
-              questionId: question.id,
+        // Bulk create MCQ responses (MUCH faster than Promise.all with individual creates)
+        if (mcqQuestions.length > 0) {
+          await tx.examAttemptMCQ.createMany({
+            data: mcqQuestions.map((question, index) => ({
+              examAttemptId: attempt.id,
+              practiceQuestionId: question.id,
               orderIndex: index + 1,
-            },
-          })
-        )
-      );
+            })),
+          });
+        }
 
-      // Create FRQ responses (empty initially)
-      await Promise.all(
-        frqQuestions.map((question, index) =>
-          prisma.examAttemptFRQ.create({
-            data: {
-              examAttemptId: examAttempt.id,
+        // Bulk create FRQ responses
+        if (frqQuestions.length > 0) {
+          await tx.examAttemptFRQ.createMany({
+            data: frqQuestions.map((question, index) => ({
+              examAttemptId: attempt.id,
               questionId: question.id,
               frqNumber: index + 1,
-            },
-          })
-        )
-      );
+            })),
+          });
+        }
 
-      console.log('✅ Exam attempt created:', examAttempt.id);
+        return attempt;
+      });
 
+      console.log(`⏱️ Database inserts completed in ${Date.now() - createStart}ms`);
+      console.log(`✅ Exam attempt created: ${examAttempt.id}`);
+      console.log(`🚀 Total start time: ${Date.now() - startTime}ms`);
+
+      // Return pre-formatted response (no additional queries needed)
       return {
         examAttemptId: examAttempt.id,
         attemptNumber,
         mcqQuestions: mcqQuestions.map((q, i) => ({
-          ...q,
-          orderIndex: i + 1,
+          id: q.id,
+          questionText: q.questionText,
           options: q.options,
-          // Don't send correct answer to frontend
-          correctAnswer: undefined,
+          unit: q.unit,
+          topic: q.topic,
+          orderIndex: i + 1,
         })),
         frqQuestions: frqQuestions.map((q, i) => ({
-          ...q,
+          id: q.id,
+          questionText: q.questionText,
+          promptText: q.promptText,
+          starterCode: q.starterCode,
+          frqParts: q.frqParts,
+          maxPoints: q.maxPoints,
+          unit: q.unit,
           frqNumber: i + 1,
-          // Don't send sample solution to frontend yet
-          sampleSolution: undefined,
         })),
         startedAt: examAttempt.startedAt,
       };
@@ -113,7 +130,7 @@ export class FullExamService {
   }
 
   /**
-   * Submit MCQ answer
+   * Submit MCQ answer - OPTIMIZED with findFirst then update
    */
   async submitMCQAnswer(
     examAttemptId: string,
@@ -121,13 +138,20 @@ export class FullExamService {
     userAnswer: string,
     timeSpent?: number
   ) {
+    // Use a single query with nested select for efficiency
     const mcqResponse = await prisma.examAttemptMCQ.findFirst({
       where: {
         examAttemptId,
         orderIndex,
       },
-      include: {
-        question: true,
+      select: {
+        id: true,
+        practiceQuestion: {
+          select: { correctAnswer: true },
+        },
+        question: {
+          select: { correctAnswer: true },
+        },
       },
     });
 
@@ -135,7 +159,14 @@ export class FullExamService {
       throw new AppError('MCQ response not found', 404);
     }
 
-    const isCorrect = userAnswer.toUpperCase() === mcqResponse.question.correctAnswer?.toUpperCase();
+    const correctAnswer = mcqResponse.practiceQuestion?.correctAnswer ||
+                          mcqResponse.question?.correctAnswer;
+
+    if (!correctAnswer) {
+      throw new AppError('Question not found', 404);
+    }
+
+    const isCorrect = userAnswer.toUpperCase() === correctAnswer.toUpperCase();
 
     await prisma.examAttemptMCQ.update({
       where: { id: mcqResponse.id },
@@ -163,13 +194,12 @@ export class FullExamService {
     partResponses?: any[],
     timeSpent?: number
   ) {
-    console.log('📝 Saving FRQ answer:', { examAttemptId, frqNumber, hasCode: !!userCode, hasPartResponses: !!partResponses });
-
     const frqResponse = await prisma.examAttemptFRQ.findFirst({
       where: {
         examAttemptId,
         frqNumber,
       },
+      select: { id: true },
     });
 
     if (!frqResponse) {
@@ -185,8 +215,6 @@ export class FullExamService {
       },
     });
 
-    console.log('✅ FRQ answer saved successfully');
-
     return {
       saved: true,
       frqNumber,
@@ -195,11 +223,9 @@ export class FullExamService {
   }
 
   /**
-   * Get exam attempt with all responses
+   * Get exam attempt with all responses - OPTIMIZED with selective fields
    */
   async getExamAttempt(examAttemptId: string) {
-    console.log('📋 Getting exam attempt:', examAttemptId);
-
     const examAttempt = await prisma.fullExamAttempt.findUnique({
       where: { id: examAttemptId },
       include: {
@@ -211,18 +237,67 @@ export class FullExamService {
           },
         },
         mcqResponses: {
-          include: {
+          select: {
+            id: true,
+            orderIndex: true,
+            userAnswer: true,
+            isCorrect: true,
+            flaggedForReview: true,
+            timeSpent: true,
+            practiceQuestion: {
+              select: {
+                id: true,
+                questionText: true,
+                options: true,
+                correctAnswer: true,
+                explanation: true,
+                unitId: true,
+                unit: {
+                  select: { id: true, unitNumber: true, name: true },
+                },
+                topic: {
+                  select: { id: true, name: true },
+                },
+              },
+            },
             question: {
-              include: {
-                unit: true,
+              select: {
+                id: true,
+                questionText: true,
+                options: true,
+                correctAnswer: true,
+                explanation: true,
+                unitId: true,
+                unit: {
+                  select: { id: true, unitNumber: true, name: true },
+                },
               },
             },
           },
           orderBy: { orderIndex: 'asc' },
         },
         frqResponses: {
-          include: {
-            question: true,
+          select: {
+            id: true,
+            frqNumber: true,
+            userCode: true,
+            partResponses: true,
+            timeSpent: true,
+            question: {
+              select: {
+                id: true,
+                questionText: true,
+                promptText: true,
+                starterCode: true,
+                frqParts: true,
+                maxPoints: true,
+                explanation: true,
+                unitId: true,
+                unit: {
+                  select: { id: true, unitNumber: true, name: true },
+                },
+              },
+            },
           },
           orderBy: { frqNumber: 'asc' },
         },
@@ -233,90 +308,113 @@ export class FullExamService {
       throw new AppError('Exam attempt not found', 404);
     }
 
-    console.log('✅ Exam attempt found');
-    console.log('📊 FRQ Responses:', examAttempt.frqResponses.length);
-    
-    // Log each FRQ to verify userCode and partResponses
-    examAttempt.frqResponses.forEach((frq: any, index: number) => {
-      console.log(`FRQ ${index + 1}:`, {
-        id: frq.id,
-        frqNumber: frq.frqNumber,
-        hasUserCode: !!frq.userCode,
-        userCodeLength: frq.userCode?.length || 0,
-        userCodePreview: frq.userCode?.substring(0, 50) || 'none',
-        hasPartResponses: !!frq.partResponses,
-        partResponsesType: typeof frq.partResponses,
-      });
+    // Transform MCQ responses to have unified question field
+    const transformedMcqResponses = examAttempt.mcqResponses.map((mcq: any) => {
+      const questionData = mcq.practiceQuestion || mcq.question;
+      return {
+        ...mcq,
+        question: questionData,
+      };
     });
 
-    return examAttempt;
+    return {
+      ...examAttempt,
+      mcqResponses: transformedMcqResponses,
+    };
   }
 
   /**
    * Flag MCQ question for review
    */
   async flagMCQForReview(examAttemptId: string, orderIndex: number, flagged: boolean) {
-    const mcqResponse = await prisma.examAttemptMCQ.findFirst({
+    const result = await prisma.examAttemptMCQ.updateMany({
       where: {
         examAttemptId,
         orderIndex,
       },
-    });
-
-    if (!mcqResponse) {
-      throw new AppError('MCQ response not found', 404);
-    }
-
-    await prisma.examAttemptMCQ.update({
-      where: { id: mcqResponse.id },
       data: {
         flaggedForReview: flagged,
       },
     });
 
+    if (result.count === 0) {
+      throw new AppError('MCQ response not found', 404);
+    }
+
     return { success: true };
   }
 
   /**
-   * Submit entire exam - instant results (MCQ only grading)
+   * Submit entire exam - OPTIMIZED with parallel calculations
    */
   async submitExam(examAttemptId: string, totalTimeSpent: number) {
     console.log('📝 Submitting exam:', examAttemptId);
+    const startTime = Date.now();
 
-    const examAttempt = await this.getExamAttempt(examAttemptId);
+    // Get only what we need for grading
+    const examAttempt = await prisma.fullExamAttempt.findUnique({
+      where: { id: examAttemptId },
+      select: {
+        id: true,
+        mcqResponses: {
+          select: {
+            isCorrect: true,
+            practiceQuestion: {
+              select: {
+                unitId: true,
+                unit: { select: { name: true, unitNumber: true } },
+              },
+            },
+            question: {
+              select: {
+                unitId: true,
+                unit: { select: { name: true, unitNumber: true } },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    if (!examAttempt) {
+      throw new AppError('Exam attempt not found', 404);
+    }
+
+    // Transform for consistent access
+    const mcqResponses = examAttempt.mcqResponses.map((mcq: any) => ({
+      isCorrect: mcq.isCorrect,
+      question: mcq.practiceQuestion || mcq.question,
+    }));
 
     // Calculate MCQ score
-    const mcqCorrect = examAttempt.mcqResponses.filter((r: any) => r.isCorrect).length;
-    const mcqScore = mcqCorrect;
-    const mcqPercentage = (mcqCorrect / 42) * 100;
+    const mcqCorrect = mcqResponses.filter((r: any) => r.isCorrect).length;
+    const mcqTotal = mcqResponses.length;
+    const mcqPercentage = mcqTotal > 0 ? (mcqCorrect / mcqTotal) * 100 : 0;
 
-    console.log(`📊 MCQ Score: ${mcqCorrect}/42 (${mcqPercentage.toFixed(1)}%)`);
+    console.log(`📊 MCQ Score: ${mcqCorrect}/${mcqTotal} (${mcqPercentage.toFixed(1)}%)`);
 
     // Calculate unit breakdown
-    const unitBreakdown = await this.generateUnitBreakdown(examAttempt);
+    const unitBreakdown = this.generateUnitBreakdownFast(mcqResponses);
 
-    // Generate strengths and weaknesses based on MCQ only
-    const { strengths, weaknesses } = this.generateStrengthsAndWeaknesses(
-      examAttempt,
-      unitBreakdown
-    );
+    // Generate strengths and weaknesses
+    const { strengths, weaknesses } = this.generateStrengthsAndWeaknessesFast(unitBreakdown);
 
     // Generate recommendations
-    const recommendations = this.generateRecommendations(
-      mcqScore,
-      strengths,
-      weaknesses
-    );
+    const recommendations = this.generateRecommendations(mcqCorrect, mcqTotal, strengths, weaknesses);
 
-    // No FRQ grading - mark as completed immediately
+    // Calculate predicted AP score
+    const predictedAPScore = this.calculateAPScoreFromMCQ(mcqPercentage);
+
+    // Update exam in single query
     await prisma.fullExamAttempt.update({
       where: { id: examAttemptId },
       data: {
         submittedAt: new Date(),
         status: 'GRADED',
         totalTimeSpent,
-        mcqScore,
+        mcqScore: mcqCorrect,
         mcqPercentage,
+        predictedAPScore,
         unitBreakdown: unitBreakdown as Prisma.InputJsonValue,
         strengths,
         weaknesses,
@@ -324,30 +422,36 @@ export class FullExamService {
       },
     });
 
-    console.log('✅ Exam submitted and graded (MCQ only)');
+    console.log(`✅ Exam graded in ${Date.now() - startTime}ms`);
 
     return {
       examAttemptId,
-      mcqScore,
+      mcqScore: mcqCorrect,
+      mcqTotal,
       mcqPercentage,
+      predictedAPScore,
       status: 'GRADED',
       message: 'Exam submitted successfully. Review your FRQ solutions below.',
     };
   }
 
   /**
-   * Generate unit breakdown
+   * Generate unit breakdown - OPTIMIZED version
    */
-  async generateUnitBreakdown(examAttempt: any) {
-    const unitStats: any = {};
+  private generateUnitBreakdownFast(mcqResponses: any[]) {
+    const unitStats: Record<string, any> = {};
 
-    for (const mcqResponse of examAttempt.mcqResponses) {
-      const unitId = mcqResponse.question.unitId;
-      const unitName = mcqResponse.question.unit?.name || 'Unknown Unit';
+    for (const mcqResponse of mcqResponses) {
+      const question = mcqResponse.question;
+      if (!question) continue;
 
+      const unitId = question.unitId;
+      
       if (!unitStats[unitId]) {
         unitStats[unitId] = {
-          unitName,
+          unitId,
+          unitName: question.unit?.name || 'Unknown Unit',
+          unitNumber: question.unit?.unitNumber || 0,
           mcqTotal: 0,
           mcqCorrect: 0,
           mcqPercentage: 0,
@@ -363,50 +467,62 @@ export class FullExamService {
     // Calculate percentages
     for (const unitId in unitStats) {
       const unit = unitStats[unitId];
-      unit.mcqPercentage = (unit.mcqCorrect / unit.mcqTotal) * 100;
+      unit.mcqPercentage = unit.mcqTotal > 0 ? (unit.mcqCorrect / unit.mcqTotal) * 100 : 0;
     }
 
     return unitStats;
   }
 
   /**
-   * Generate strengths and weaknesses
+   * Generate strengths and weaknesses - OPTIMIZED version
    */
-  generateStrengthsAndWeaknesses(examAttempt: any, unitBreakdown: any) {
+  private generateStrengthsAndWeaknessesFast(unitBreakdown: Record<string, any>) {
     const strengths: string[] = [];
     const weaknesses: string[] = [];
 
-    // Analyze MCQ performance by unit
-    const sortedUnits = Object.entries(unitBreakdown).sort(
-      ([, a]: any, [, b]: any) => b.mcqPercentage - a.mcqPercentage
+    const sortedUnits = Object.values(unitBreakdown).sort(
+      (a: any, b: any) => b.mcqPercentage - a.mcqPercentage
     );
 
-    // Top 2 units are strengths
-    for (let i = 0; i < Math.min(2, sortedUnits.length); i++) {
-      const [, unit]: any = sortedUnits[i];
-      if (unit.mcqPercentage >= 70) {
-        strengths.push(
-          `Strong performance in ${unit.unitName} (${unit.mcqPercentage.toFixed(0)}% correct)`
-        );
+    // Top performing units are strengths
+    for (const unit of sortedUnits) {
+      if (strengths.length >= 3) break;
+      if (unit.mcqPercentage >= 70 && unit.mcqTotal >= 2) {
+        strengths.push(`Strong in ${unit.unitName} (${unit.mcqPercentage.toFixed(0)}%)`);
       }
     }
 
-    // Bottom 2 units are weaknesses
-    for (let i = Math.max(0, sortedUnits.length - 2); i < sortedUnits.length; i++) {
-      const [, unit]: any = sortedUnits[i];
-      if (unit.mcqPercentage < 70) {
-        weaknesses.push(
-          `Needs improvement in ${unit.unitName} (${unit.mcqPercentage.toFixed(0)}% correct)`
-        );
+    // Bottom performing units are weaknesses
+    for (let i = sortedUnits.length - 1; i >= 0 && weaknesses.length < 3; i--) {
+      const unit = sortedUnits[i];
+      if (unit.mcqPercentage < 60 && unit.mcqTotal >= 2) {
+        weaknesses.push(`Needs work on ${unit.unitName} (${unit.mcqPercentage.toFixed(0)}%)`);
       }
     }
 
-    // Add note about FRQ review
     if (strengths.length === 0) {
       strengths.push('Completed all exam sections');
     }
 
+    if (weaknesses.length === 0) {
+      weaknesses.push('Keep practicing to maintain performance');
+    }
+
     return { strengths, weaknesses };
+  }
+
+  /**
+   * Generate unit breakdown (legacy - for compatibility)
+   */
+  generateUnitBreakdown(examAttempt: any) {
+    return this.generateUnitBreakdownFast(examAttempt.mcqResponses);
+  }
+
+  /**
+   * Generate strengths and weaknesses (legacy - for compatibility)
+   */
+  generateStrengthsAndWeaknesses(examAttempt: any, unitBreakdown: any) {
+    return this.generateStrengthsAndWeaknessesFast(unitBreakdown);
   }
 
   /**
@@ -414,10 +530,11 @@ export class FullExamService {
    */
   generateRecommendations(
     mcqScore: number,
+    mcqTotal: number,
     strengths: string[],
     weaknesses: string[]
   ) {
-    const mcqPercentage = (mcqScore / 42) * 100;
+    const mcqPercentage = mcqTotal > 0 ? (mcqScore / mcqTotal) * 100 : 0;
 
     const recommendations: any = {
       overall: '',
@@ -425,72 +542,100 @@ export class FullExamService {
       nextSteps: [],
     };
 
-    // Overall assessment based on MCQ only
     if (mcqPercentage >= 85) {
-      recommendations.overall = 'Excellent MCQ performance! Review your FRQ solutions with the provided rubrics and sample solutions.';
+      recommendations.overall = 'Excellent performance! You\'re well-prepared for the AP exam.';
     } else if (mcqPercentage >= 70) {
-      recommendations.overall = 'Strong MCQ foundation. Focus on improving weak areas and practice FRQ questions.';
+      recommendations.overall = 'Strong foundation. Focus on weak areas to push into the 5 range.';
     } else if (mcqPercentage >= 60) {
-      recommendations.overall = 'Good MCQ performance. Review incorrect answers and practice FRQ coding.';
+      recommendations.overall = 'Good progress. More practice will help solidify your understanding.';
+    } else if (mcqPercentage >= 50) {
+      recommendations.overall = 'You\'re getting there. Focus on fundamentals and practice consistently.';
     } else {
-      recommendations.overall = 'Focus on strengthening fundamentals. Review MCQ explanations and practice basic coding concepts.';
+      recommendations.overall = 'Focus on core concepts. Consider reviewing unit content before more practice.';
     }
 
-    // Study focus based on weaknesses
-    if (weaknesses.length > 0) {
-      recommendations.studyFocus = weaknesses.map((w: string) => 
-        `Review: ${w.replace('Needs improvement in ', '')}`
-      );
-    }
+    recommendations.studyFocus = weaknesses.map((w: string) =>
+      w.replace('Needs work on ', 'Review: ')
+    );
 
-    recommendations.studyFocus.push('Review FRQ solutions and rubrics carefully');
-    recommendations.studyFocus.push('Practice writing complete, working Java code');
-
-    // Next steps
     recommendations.nextSteps = [
-      'Review all FRQ sample solutions and scoring rubrics',
-      'Compare your FRQ code to the provided solutions',
-      'Schedule a tutoring session to review FRQs if needed',
-      'Practice weak MCQ units with targeted questions',
-      'Retake exam with new random questions after focused study',
+      'Review incorrect MCQ answers and explanations',
+      'Practice FRQ questions separately',
+      'Take another full exam after studying weak areas',
+      'Schedule a tutoring session for challenging topics',
     ];
 
     return recommendations;
   }
 
   /**
+   * Calculate estimated AP score from MCQ percentage
+   */
+  calculateAPScoreFromMCQ(mcqPercentage: number): number {
+    const estimatedTotal = (mcqPercentage * 0.5) + (60 * 0.5);
+
+    if (estimatedTotal >= 70) return 5;
+    if (estimatedTotal >= 58) return 4;
+    if (estimatedTotal >= 45) return 3;
+    if (estimatedTotal >= 33) return 2;
+    return 1;
+  }
+
+  /**
    * Calculate estimated AP score range based on MCQ only
    */
-  calculateEstimatedAPRange(mcqScore: number) {
-    const mcqWeighted = (mcqScore / 42) * 55;
-    
-    // Provide ranges assuming different FRQ performance levels
+  calculateEstimatedAPRange(mcqScore: number, mcqTotal: number = 42) {
+    const mcqPercentage = mcqTotal > 0 ? (mcqScore / mcqTotal) * 100 : 0;
+    const mcqWeighted = mcqPercentage * 0.5;
+
     const scenarios = [
-      { frqPercent: 90, label: 'Strong FRQ (90%)', score: mcqWeighted + (45 * 0.9) },
-      { frqPercent: 75, label: 'Good FRQ (75%)', score: mcqWeighted + (45 * 0.75) },
-      { frqPercent: 60, label: 'Average FRQ (60%)', score: mcqWeighted + (45 * 0.6) },
-      { frqPercent: 45, label: 'Weak FRQ (45%)', score: mcqWeighted + (45 * 0.45) },
+      { frqPercent: 90, label: 'Excellent FRQ (90%)', weightedScore: mcqWeighted + (90 * 0.5) },
+      { frqPercent: 75, label: 'Good FRQ (75%)', weightedScore: mcqWeighted + (75 * 0.5) },
+      { frqPercent: 60, label: 'Average FRQ (60%)', weightedScore: mcqWeighted + (60 * 0.5) },
+      { frqPercent: 45, label: 'Below Average FRQ (45%)', weightedScore: mcqWeighted + (45 * 0.5) },
+      { frqPercent: 30, label: 'Weak FRQ (30%)', weightedScore: mcqWeighted + (30 * 0.5) },
     ];
 
     return scenarios.map(s => ({
       ...s,
-      apScore: this.calculateAPScore(s.score),
+      apScore: this.calculateAPScoreFromPercentage(s.weightedScore),
     }));
   }
 
   /**
    * Calculate AP Score from percentage
    */
-  calculateAPScore(percentage: number): number {
-    if (percentage >= 75) return 5;
-    if (percentage >= 62) return 4;
-    if (percentage >= 50) return 3;
-    if (percentage >= 37) return 2;
+  calculateAPScoreFromPercentage(percentage: number): number {
+    if (percentage >= 70) return 5;
+    if (percentage >= 58) return 4;
+    if (percentage >= 45) return 3;
+    if (percentage >= 33) return 2;
     return 1;
   }
 
   /**
-   * ADMIN: Get all exam attempts with filters
+   * Get exam results with full details
+   */
+  async getExamResults(examAttemptId: string) {
+    const examAttempt = await this.getExamAttempt(examAttemptId);
+
+    if (examAttempt.status === 'IN_PROGRESS') {
+      throw new AppError('Exam has not been submitted yet', 400);
+    }
+
+    const apScoreRange = this.calculateEstimatedAPRange(
+      examAttempt.mcqScore || 0,
+      examAttempt.mcqResponses.length
+    );
+
+    return {
+      ...examAttempt,
+      apScoreRange,
+    };
+  }
+
+  /**
+   * ADMIN: Get all exam attempts with filters - OPTIMIZED
    */
   async getAllExamAttempts(filters: {
     userId?: string;
@@ -505,12 +650,27 @@ export class FullExamService {
     const [attempts, total] = await Promise.all([
       prisma.fullExamAttempt.findMany({
         where,
-        include: {
+        select: {
+          id: true,
+          attemptNumber: true,
+          status: true,
+          mcqScore: true,
+          mcqPercentage: true,
+          predictedAPScore: true,
+          totalTimeSpent: true,
+          createdAt: true,
+          submittedAt: true,
           user: {
             select: {
               id: true,
               email: true,
               name: true,
+            },
+          },
+          _count: {
+            select: {
+              mcqResponses: true,
+              frqResponses: true,
             },
           },
         },
@@ -522,6 +682,150 @@ export class FullExamService {
     ]);
 
     return { attempts, total };
+  }
+
+  /**
+   * ADMIN: Get exam statistics - OPTIMIZED with parallel queries
+   */
+  async getExamStatistics() {
+    const [
+      totalAttempts,
+      completedAttempts,
+      inProgressAttempts,
+      averageScore,
+      scoreDistribution,
+    ] = await Promise.all([
+      prisma.fullExamAttempt.count(),
+      prisma.fullExamAttempt.count({ where: { status: 'GRADED' } }),
+      prisma.fullExamAttempt.count({ where: { status: 'IN_PROGRESS' } }),
+      prisma.fullExamAttempt.aggregate({
+        where: { status: 'GRADED' },
+        _avg: { mcqPercentage: true },
+      }),
+      prisma.fullExamAttempt.groupBy({
+        by: ['predictedAPScore'],
+        where: {
+          status: 'GRADED',
+          predictedAPScore: { not: null },
+        },
+        _count: true,
+      }),
+    ]);
+
+    return {
+      totalAttempts,
+      completedAttempts,
+      inProgressAttempts,
+      averageMCQPercentage: averageScore._avg.mcqPercentage || 0,
+      scoreDistribution: scoreDistribution.reduce((acc: any, item) => {
+        acc[`score${item.predictedAPScore}`] = item._count;
+        return acc;
+      }, {}),
+    };
+  }
+
+  /**
+   * ADMIN: Get all users who have taken exams
+   */
+  async getExamUsers() {
+    const users = await prisma.user.findMany({
+      where: {
+        fullExamAttempts: {
+          some: {},
+        },
+      },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        _count: {
+          select: {
+            fullExamAttempts: true,
+          },
+        },
+        fullExamAttempts: {
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+          select: {
+            mcqPercentage: true,
+            predictedAPScore: true,
+            createdAt: true,
+          },
+        },
+      },
+      orderBy: {
+        fullExamAttempts: {
+          _count: 'desc',
+        },
+      },
+    });
+
+    return users.map(user => ({
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      attemptCount: user._count.fullExamAttempts,
+      lastAttempt: user.fullExamAttempts[0] || null,
+    }));
+  }
+
+  /**
+   * ADMIN: Get student's exam history
+   */
+  async getStudentExamHistory(userId: string) {
+    const [user, attempts] = await Promise.all([
+      prisma.user.findUnique({
+        where: { id: userId },
+        select: {
+          id: true,
+          email: true,
+          name: true,
+        },
+      }),
+      prisma.fullExamAttempt.findMany({
+        where: { userId },
+        orderBy: { createdAt: 'desc' },
+        select: {
+          id: true,
+          attemptNumber: true,
+          status: true,
+          mcqScore: true,
+          mcqPercentage: true,
+          predictedAPScore: true,
+          totalTimeSpent: true,
+          createdAt: true,
+          submittedAt: true,
+        },
+      }),
+    ]);
+
+    if (!user) {
+      throw new AppError('User not found', 404);
+    }
+
+    const completedAttempts = attempts.filter(a => a.status === 'GRADED');
+
+    return {
+      user,
+      attempts,
+      summary: {
+        totalAttempts: attempts.length,
+        completedAttempts: completedAttempts.length,
+        bestScore: completedAttempts.length > 0 
+          ? Math.max(...completedAttempts.map(a => a.mcqPercentage || 0))
+          : 0,
+        averageScore: completedAttempts.length > 0
+          ? completedAttempts.reduce((sum, a) => sum + (a.mcqPercentage || 0), 0) / completedAttempts.length
+          : 0,
+      },
+    };
+  }
+
+  /**
+   * ADMIN: Get detailed exam attempt
+   */
+  async getExamAttemptAdmin(examAttemptId: string) {
+    return this.getExamAttempt(examAttemptId);
   }
 }
 

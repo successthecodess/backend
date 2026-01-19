@@ -171,6 +171,7 @@ model Question {
   unitId              String
   topicId             String?
   freeTrialQuestions   FreeTrialQuestion[] 
+  examAttemptMCQs     ExamAttemptMCQ[]
   type                QuestionType
   difficulty          DifficultyLevel
   questionText        String
@@ -641,8 +642,12 @@ model ExamAttemptMCQ {
   examAttemptId       String
   examAttempt         FullExamAttempt     @relation(fields: [examAttemptId], references: [id], onDelete: Cascade)
   
-  questionId          String
-  question            ExamBankQuestion    @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  // Support both question sources
+  questionId          String?             // ExamBankQuestion (for FRQ or legacy)
+  question            ExamBankQuestion?   @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  
+  practiceQuestionId  String?             // Question (unified MCQ)
+  practiceQuestion    Question?           @relation(fields: [practiceQuestionId], references: [id], onDelete: Cascade)
   
   orderIndex          Int
   userAnswer          String?
@@ -655,6 +660,7 @@ model ExamAttemptMCQ {
   
   @@unique([examAttemptId, orderIndex])
   @@index([examAttemptId])
+  @@index([practiceQuestionId])
   @@map("exam_attempt_mcqs")
 }
 
