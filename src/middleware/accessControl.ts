@@ -6,7 +6,7 @@ import prisma from '../config/database.js';
 export const AccessTiers = {
   FREE_TRIAL: 'free-trial-only',
   BASIC: 'apcs-practice-access',
-  FULL: 'course-apcs-a', // Highest tier - includes everything
+  FULL: 'apcs-test-access', // Highest tier - includes everything
   PREMIUM: 'apcs-exam', // Premium full exam access
 } as const;
 
@@ -74,7 +74,7 @@ export async function checkUserAccess(userId: string): Promise<UserAccess> {
   const hasPremiumTag = tags.includes(AccessTiers.PREMIUM);
   const hasPremium = hasPremiumTag || isPremiumActive;
   const hasFull = tags.includes(AccessTiers.FULL) || hasPremium;
-  const hasBasic = tags.includes(AccessTiers.BASIC) || hasFull;
+  const hasBasic = tags.includes(AccessTiers.BASIC);
   const hasTrial = !user.hasUsedFreeTrial || hasBasic;
 
   return {
@@ -82,7 +82,7 @@ export async function checkUserAccess(userId: string): Promise<UserAccess> {
     hasBasicAccess: hasBasic,
     hasFullAccess: hasFull,
     hasPremiumAccess: hasPremium,
-    canAccessPractice: hasBasic, // Basic or higher
+    canAccessPractice: hasFull, // Basic or higher
     canAccessTests: hasFull, // Full or higher
     canAccessCourse: hasFull, // Full or higher
     canAccessPremiumExam: hasPremium, // Premium only

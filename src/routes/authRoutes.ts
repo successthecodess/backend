@@ -909,7 +909,7 @@ router.get('/oauth/my-access', async (req, res) => {
     
     console.log('🔐 Access check for user:', decoded.userId);
     console.log('   Tags:', access.accessTier);
-    console.log('   hasPracticeTestAccess:', access.hasBasicAccess);
+    console.log('   hasPracticeTestAccess:', access.hasFullAccess);
 
     res.json(access);
   } catch (error) {

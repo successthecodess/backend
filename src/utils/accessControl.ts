@@ -6,8 +6,8 @@ import prisma from '../config/database.js';
  */
 export const TAG_HIERARCHY = {
   'free-trial-completed': 1,
-  'apcs-test-access': 2, // Practice tests only
-  'course-apcs-a': 3, // Full course access
+  'apcs-test-accesss': 2, // Practice tests only
+  'apcs-test-access': 3, // Full course access
   'premium-access': 4, // Everything
 } as const;
 
@@ -63,10 +63,10 @@ export function getAccessLevel(userTags: string[]): {
   return {
     level: highestLevel,
     highestTag,
-    hasFullAccess: highestLevel >= TAG_HIERARCHY['course-apcs-a'],
+    hasFullAccess: highestLevel >= TAG_HIERARCHY['apcs-test-access'],
     hasPracticeTestAccess: highestLevel >= TAG_HIERARCHY['apcs-test-access'],
     // apcs-exam is checked separately (not in hierarchy)
-    canAccessPremiumExam: userTags.includes('apcs-exam') || highestLevel >= TAG_HIERARCHY['course-apcs-a'],
+    canAccessPremiumExam: userTags.includes('apcs-exam') || highestLevel >= TAG_HIERARCHY['apcs-test-access'],
     hasCompletedTrial: userTags.includes('free-trial-completed'),
   };
 }
@@ -78,10 +78,10 @@ export function shouldShowFreeTrial(
   userTags: string[],
   hasUsedTrial: boolean
 ): boolean {
-  const { hasFullAccess, hasPracticeTestAccess } = getAccessLevel(userTags);
+  const { hasFullAccess } = getAccessLevel(userTags);
   
   // Don't show if user has any paid access
-  if (hasFullAccess || hasPracticeTestAccess) {
+  if (hasFullAccess) {
     return false;
   }
   
