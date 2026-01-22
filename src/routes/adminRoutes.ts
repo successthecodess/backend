@@ -772,69 +772,6 @@ router.patch('/admin-emails/:id/toggle', requireAdmin, async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-router.get('/free-trial/questions', requireAdmin, async (req, res) => {
-  try {
-    const questions = await freeTrialService.getAllFreeTrialQuestions();
-    res.json(questions);
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Get available questions for selection
-router.get('/free-trial/available-questions', requireAdmin, async (req, res) => {
-  try {
-    const { unitId } = req.query;
-    const questions = await freeTrialService.getAvailableQuestions(unitId as string);
-    res.json(questions);
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Set a question as free trial question
-router.post('/free-trial/questions', requireAdmin, async (req, res) => {
-  try {
-    const { questionId, orderIndex } = req.body;
-
-    if (!questionId || orderIndex === undefined) {
-      return res.status(400).json({ error: 'questionId and orderIndex are required' });
-    }
-
-    if (orderIndex < 1 || orderIndex > 10) {
-      return res.status(400).json({ error: 'orderIndex must be between 1 and 10' });
-    }
-
-    const freeTrialQuestion = await freeTrialService.setFreeTrialQuestion(
-      questionId,
-      orderIndex
-    );
-
-    res.json({
-      success: true,
-      freeTrialQuestion,
-    });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Remove a question from free trial
-router.delete('/free-trial/questions/:orderIndex', requireAdmin, async (req, res) => {
-  try {
-    const orderIndex = parseInt(req.params.orderIndex);
-
-    if (orderIndex < 1 || orderIndex > 10) {
-      return res.status(400).json({ error: 'orderIndex must be between 1 and 10' });
-    }
-
-    await freeTrialService.removeFreeTrialQuestion(orderIndex);
-
-    res.json({ success: true });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
 
 // Get recent audit logs (admin only)
 router.get('/audit-logs', requireAdmin, async (req, res) => {
