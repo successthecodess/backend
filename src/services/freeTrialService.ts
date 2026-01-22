@@ -29,57 +29,70 @@ class FreeTrialService {
   }
 
   /**
-   * Get the admin-selected 10 free trial questions (RANDOMIZED)
+   * Get 10 RANDOM questions from the entire approved question pool
    */
   async getFreeTrialQuestions(): Promise<any[]> {
-    console.log('📚 Fetching admin-selected free trial questions...');
+    console.log('📚 Fetching random questions from entire pool...');
 
-    const freeTrialQuestions = await prisma.freeTrialQuestion.findMany({
+    // Get ALL approved questions
+    const allQuestions = await prisma.question.findMany({
+      where: {
+        approved: true,
+        options: {
+          //isEmpty: false, // Ensure questions have options
+        },
+      },
       include: {
-        question: {
-          include: {
-            unit: true,
-            topic: true,
+        unit: {
+          select: {
+            id: true,
+            unitNumber: true,
+            name: true,
+          },
+        },
+        topic: {
+          select: {
+            id: true,
+            name: true,
           },
         },
       },
-      // Don't order by orderIndex - we'll randomize instead
     });
 
-    if (freeTrialQuestions.length === 0) {
-      console.log('⚠️ No free trial questions configured by admin');
+    if (allQuestions.length < 10) {
+      console.log(`⚠️ Not enough questions available (found: ${allQuestions.length})`);
       throw new AppError(
-        'Free trial is not currently available. Please contact your instructor.',
+        'Not enough questions available for free trial. Please contact your instructor.',
         404
       );
     }
 
-    const questions = freeTrialQuestions.map(ftq => ftq.question);
+    console.log(`✅ Found ${allQuestions.length} approved questions in pool`);
 
-    // RANDOMIZE THE ORDER
-    const randomizedQuestions = shuffleArray(questions);
+    // Shuffle all questions
+    const shuffled = shuffleArray(allQuestions);
 
-    console.log(`✅ Loaded ${randomizedQuestions.length} free trial questions (randomized)`);
+    // Take first 10 from shuffled array (completely random)
+    const selectedQuestions = shuffled.slice(0, 10);
 
-    return randomizedQuestions;
+    console.log(`✅ Selected 10 random questions:`, 
+      selectedQuestions.map(q => ({
+        id: q.id.substring(0, 8),
+        unit: q.unit?.name,
+        difficulty: q.difficulty
+      }))
+    );
+
+    return selectedQuestions;
   }
 
   /**
-   * Start free trial session
+   * Start free trial session with 10 random questions
    */
   async startFreeTrialSession(userId: string, userEmail: string, userName?: string) {
     console.log('🎁 Starting free trial session for:', userId);
 
-    // Check if already used
-    const hasUsed = await this.hasUsedFreeTrial(userId);
-    if (hasUsed) {
-      throw new AppError(
-        'You have already completed your free trial. Please contact us for full access.',
-        403
-      );
-    }
-
-    // Get the admin-selected questions (now randomized)
+    // Get 10 random questions from entire pool
     const questions = await this.getFreeTrialQuestions();
 
     if (questions.length === 0) {
@@ -93,22 +106,40 @@ class FreeTrialService {
     const session = await prisma.studySession.create({
       data: {
         userId,
-        unitId: questions[0].unitId,
+        unitId: questions[0].unitId, // Just use first question's unit
         sessionType: SessionType.FREE_TRIAL,
         totalQuestions: 0,
         correctAnswers: 0,
         targetQuestions: questions.length,
-        metadata: { questionOrder }, // Store the randomized order
+        metadata: { 
+          questionOrder, // Store the randomized order
+          unitDistribution: this.getUnitDistribution(questions), // Track diversity
+        },
       },
     });
 
     console.log('✅ Free trial session created:', session.id);
+    console.log('📊 Question distribution:', this.getUnitDistribution(questions));
 
     return {
       session,
       questions,
       totalQuestions: questions.length,
     };
+  }
+
+  /**
+   * Helper to track unit distribution in selected questions
+   */
+  private getUnitDistribution(questions: any[]): Record<string, number> {
+    const distribution: Record<string, number> = {};
+    
+    questions.forEach(q => {
+      const unitName = q.unit?.name || 'Unknown';
+      distribution[unitName] = (distribution[unitName] || 0) + 1;
+    });
+
+    return distribution;
   }
 
   /**
@@ -140,12 +171,18 @@ class FreeTrialService {
         id: true,
         totalQuestions: true,
         correctAnswers: true,
+        metadata: true,
         responses: {
           select: {
             isCorrect: true,
             question: {
               select: {
                 topic: {
+                  select: {
+                    name: true,
+                  },
+                },
+                unit: {
                   select: {
                     name: true,
                   },
@@ -164,6 +201,9 @@ class FreeTrialService {
     const accuracy = session.totalQuestions > 0
       ? Math.round((session.correctAnswers / session.totalQuestions) * 100)
       : 0;
+
+    // Log performance analytics
+  
 
     return {
       session,
@@ -185,7 +225,7 @@ class FreeTrialService {
 
       const companyAuth = await prisma.gHLCompanyAuth.findUnique({
         where: { companyId: user.ghlCompanyId },
-        select: { accessToken: true }, // Only select what we need
+        select: { accessToken: true },
       });
 
       if (!companyAuth) {
@@ -201,7 +241,7 @@ class FreeTrialService {
             'Authorization': `Bearer ${companyAuth.accessToken}`,
             'Version': '2021-07-28',
           },
-          timeout: 5000, // Add timeout
+          timeout: 5000,
         }
       );
 
@@ -240,117 +280,59 @@ class FreeTrialService {
     }
   }
 
-  // Admin functions for managing free trial questions
+  // ==========================================
+  // ADMIN FUNCTIONS (Optional - for future use)
+  // ==========================================
 
   /**
-   * Get all free trial questions (admin) - OPTIMIZED
+   * Get statistics about question pool
    */
-  async getAllFreeTrialQuestions() {
-    return await prisma.freeTrialQuestion.findMany({
-      include: {
-        question: {
-          select: {
-            id: true,
-            questionText: true,
-            difficulty: true,
-            unit: {
-              select: {
-                id: true,
-                unitNumber: true,
-                name: true,
-              },
-            },
-            topic: {
-              select: {
-                id: true,
-                name: true,
-              },
-            },
-          },
-        },
-      },
-      orderBy: {
-        orderIndex: 'asc',
-      },
+  async getQuestionPoolStats() {
+    const total = await prisma.question.count({
+      where: { approved: true },
     });
-  }
 
-  /**
-   * Set a question as free trial question (admin)
-   */
-  async setFreeTrialQuestion(questionId: string, orderIndex: number) {
-    // Use transaction for atomicity
-    return await prisma.$transaction(async (tx) => {
-      // Check if this position is already taken
-      const existing = await tx.freeTrialQuestion.findUnique({
-        where: { orderIndex },
-      });
-
-      if (existing) {
-        // Remove the existing one first
-        await tx.freeTrialQuestion.delete({
-          where: { orderIndex },
-        });
-      }
-
-      // Add the new one
-      return await tx.freeTrialQuestion.create({
-        data: {
-          questionId,
-          orderIndex,
-        },
-        include: {
-          question: {
-            select: {
-              id: true,
-              questionText: true,
-              difficulty: true,
-              unit: {
-                select: {
-                  unitNumber: true,
-                  name: true,
-                },
-              },
-              topic: {
-                select: {
-                  name: true,
-                },
-              },
-            },
-          },
-        },
-      });
+    const byUnit = await prisma.question.groupBy({
+      by: ['unitId'],
+      where: { approved: true },
+      _count: true,
     });
-  }
 
-  /**
-   * Remove a question from free trial (admin)
-   */
-  async removeFreeTrialQuestion(orderIndex: number) {
-    await prisma.freeTrialQuestion.delete({
-      where: { orderIndex },
+    const byDifficulty = await prisma.question.groupBy({
+      by: ['difficulty'],
+      where: { approved: true },
+      _count: true,
     });
-  }
 
-  /**
-   * Get available questions for selection (admin) - OPTIMIZED
-   */
-  async getAvailableQuestions(unitId?: string) {
-    const where: any = {
-      approved: true,
+    return {
+      total,
+      byUnit: await Promise.all(
+        byUnit.map(async (item) => {
+          const unit = await prisma.unit.findUnique({
+            where: { id: item.unitId },
+            select: { name: true, unitNumber: true },
+          });
+          return {
+            unit: unit?.name || 'Unknown',
+            unitNumber: unit?.unitNumber,
+            count: item._count,
+          };
+        })
+      ),
+      byDifficulty: byDifficulty.map(item => ({
+        difficulty: item.difficulty,
+        count: item._count,
+      })),
     };
+  }
 
-    if (unitId) {
-      where.unitId = unitId;
-    }
-
+  /**
+   * Get all approved questions (for admin review)
+   */
+  async getAllApprovedQuestions() {
     return await prisma.question.findMany({
-      where,
-      select: {
-        id: true,
-        questionText: true,
-        difficulty: true,
-        unitId: true,
+      where: { approved: true },
+      include: {
         unit: {
           select: {
             id: true,
@@ -364,17 +346,11 @@ class FreeTrialService {
             name: true,
           },
         },
-        freeTrialQuestions: {
-          select: {
-            orderIndex: true,
-          },
-        },
       },
       orderBy: [
         { unit: { unitNumber: 'asc' } },
         { createdAt: 'desc' },
       ],
-      take: 100, // Limit results for performance
     });
   }
 }
