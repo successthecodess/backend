@@ -4,7 +4,7 @@ import { generateSessionSummary, getSessionInsights } from '../services/aiServic
 import { asyncHandler } from '../middleware/errorHandler.js';
 import prisma from '../config/database.js';
 
-// Helper function to calculate AP score from performance (no AI)
+// Helper function to calculate AP score
 function calculateAPScore(
   accuracy: number,
   avgDifficulty: number,
@@ -49,7 +49,7 @@ function calculateAPScore(
   };
 }
 
-// Helper function to generate logic-based summary (no AI)
+// Generate logic-based summary
 async function generateLogicBasedSummary(sessionId: string) {
   const session = await prisma.studySession.findUnique({
     where: { id: sessionId },
@@ -62,7 +62,7 @@ async function generateLogicBasedSummary(sessionId: string) {
               difficulty: true,
               topicId: true,
               topic: { select: { id: true, name: true } },
-              unit: { select: { id: true, name: true } },
+              unit: { select: { id: true, name: true, unitNumber: true } },
             },
           },
         },
@@ -75,7 +75,7 @@ async function generateLogicBasedSummary(sessionId: string) {
   }
 
   const unitInfo = session.responses[0]?.question?.unit || null;
-  const unitName = unitInfo?.name || 'Practice Session';
+  const unitName = session.unitId ? (unitInfo?.name || 'Practice Session') : 'Mixed Practice (All Units)';
 
   const totalQuestions = session.responses.length;
   const correctAnswers = session.responses.filter((r: any) => r.isCorrect).length;
@@ -115,6 +115,18 @@ async function generateLogicBasedSummary(sessionId: string) {
     }
   });
 
+  const byUnit: Record<string, { correct: number; total: number; name: string; unitNumber: number }> = {};
+  session.responses.forEach((r: any) => {
+    const unit = r.question.unit;
+    if (unit && !byUnit[unit.id]) {
+      byUnit[unit.id] = { correct: 0, total: 0, name: unit.name, unitNumber: unit.unitNumber };
+    }
+    if (unit) {
+      byUnit[unit.id].total++;
+      if (r.isCorrect) byUnit[unit.id].correct++;
+    }
+  });
+
   const apPrediction = calculateAPScore(accuracy, avgDifficulty, totalQuestions);
 
   const topicPerformance = Object.entries(byTopic).map(([id, data]) => ({
@@ -124,6 +136,15 @@ async function generateLogicBasedSummary(sessionId: string) {
     correct: data.correct,
     total: data.total,
   }));
+
+  const unitPerformance = Object.entries(byUnit).map(([id, data]) => ({
+    unitId: id,
+    name: data.name,
+    unitNumber: data.unitNumber,
+    accuracy: data.total > 0 ? (data.correct / data.total) * 100 : 0,
+    correct: data.correct,
+    total: data.total,
+  })).sort((a, b) => a.unitNumber - b.unitNumber);
 
   const strengths = topicPerformance
     .filter((t) => t.accuracy >= 70 && t.total >= 2)
@@ -143,6 +164,13 @@ async function generateLogicBasedSummary(sessionId: string) {
 
   if (weaknesses.length > 0) {
     recommendations.push(`Focus on: ${weaknesses.map((w) => w.name).join(', ')}`);
+  }
+
+  if (!session.unitId && unitPerformance.length > 0) {
+    const weakUnits = unitPerformance.filter(u => u.accuracy < 60 && u.total >= 2);
+    if (weakUnits.length > 0) {
+      recommendations.push(`Review these units: ${weakUnits.map(u => `Unit ${u.unitNumber}`).join(', ')}`);
+    }
   }
 
   if (accuracy >= 80 && avgDifficulty < 2.5) {
@@ -171,6 +199,7 @@ async function generateLogicBasedSummary(sessionId: string) {
     sessionId,
     unitId: session.unitId,
     unitName,
+    isMixedMode: !session.unitId,
     completedAt: new Date().toISOString(),
     totalQuestions,
     correctAnswers,
@@ -205,6 +234,7 @@ async function generateLogicBasedSummary(sessionId: string) {
       },
     },
     byTopic: topicPerformance,
+    byUnit: unitPerformance,
     apScore: apPrediction.score,
     apScoreConfidence: apPrediction.confidence,
     apScoreBreakdown: apPrediction.breakdown,
@@ -225,7 +255,14 @@ async function generateLogicBasedSummary(sessionId: string) {
 }
 
 export const startPracticeSession = asyncHandler(async (req: Request, res: Response) => {
-  const { userId, unitId, topicId, userEmail, userName, targetQuestions } = req.body;
+  const { userId, unitId, topicId, userEmail, userName, targetQuestions, mixed } = req.body;
+
+  if (!mixed && !unitId) {
+    return res.status(400).json({
+      success: false,
+      message: 'unitId is required for non-mixed practice sessions',
+    });
+  }
 
   const result = await practiceSessionService.startSession(
     userId,
@@ -233,36 +270,49 @@ export const startPracticeSession = asyncHandler(async (req: Request, res: Respo
     topicId,
     userEmail,
     userName,
-    targetQuestions || 10
+    targetQuestions || 10,
+    mixed || false
   );
 
   res.status(200).json({
-    status: 'success',
+    success: true,
     data: result,
   });
 });
 
 export const getNextQuestion = asyncHandler(async (req: Request, res: Response) => {
-  const { userId, sessionId, unitId, answeredQuestionIds, topicId } = req.body;
+  const { userId, sessionId, unitId, answeredQuestionIds, topicId, mixed, difficulty } = req.body;
 
-  if (!unitId) {
+  if (!mixed && !unitId) {
     return res.status(400).json({
-      status: 'error',
-      message: 'unitId is required',
+      success: false,
+      message: 'unitId is required for non-mixed practice sessions',
     });
   }
 
-  const question = await practiceSessionService.getNextQuestion(
+  const result = await practiceSessionService.getNextQuestion(
     userId,
     sessionId,
     unitId,
     answeredQuestionIds || [],
-    topicId
+    topicId,
+    mixed || false,
+    difficulty
   );
 
+  if (!result.question) {
+    return res.status(200).json({
+      success: true,
+      data: { question: null, sessionComplete: true, currentDifficulty: result.currentDifficulty },
+    });
+  }
+
   res.status(200).json({
-    status: 'success',
-    data: { question },
+    success: true,
+    data: { 
+      question: result.question,
+      currentDifficulty: result.currentDifficulty,
+    },
   });
 });
 
@@ -278,7 +328,7 @@ export const submitAnswer = asyncHandler(async (req: Request, res: Response) => 
   );
 
   res.status(200).json({
-    status: 'success',
+    success: true,
     data: result,
   });
 });
@@ -287,7 +337,6 @@ export const endPracticeSession = asyncHandler(async (req: Request, res: Respons
   const { sessionId } = req.params;
   const { generateAiSummary = false } = req.body;
 
-  // Run endSession and generateLogicBasedSummary in parallel
   const [result, summary] = await Promise.all([
     practiceSessionService.endSession(sessionId),
     generateLogicBasedSummary(sessionId),
@@ -300,7 +349,7 @@ export const endPracticeSession = asyncHandler(async (req: Request, res: Respons
   }
 
   res.status(200).json({
-    status: 'success',
+    success: true,
     data: {
       ...result,
       summary,
@@ -315,13 +364,13 @@ export const getSessionSummary = asyncHandler(async (req: Request, res: Response
 
   if (!summary) {
     return res.status(404).json({
-      status: 'error',
+      success: false,
       message: 'Summary not found or still generating',
     });
   }
 
   res.status(200).json({
-    status: 'success',
+    success: true,
     data: summary,
   });
 });
@@ -334,7 +383,7 @@ export const getSessionResults = asyncHandler(async (req: Request, res: Response
 
   if (!results) {
     return res.status(404).json({
-      status: 'error',
+      success: false,
       message: 'Session not found',
     });
   }
@@ -345,7 +394,7 @@ export const getSessionResults = asyncHandler(async (req: Request, res: Response
   }
 
   res.status(200).json({
-    status: 'success',
+    success: true,
     data: {
       ...results,
       aiInsights,

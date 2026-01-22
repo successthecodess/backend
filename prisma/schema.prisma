@@ -694,6 +694,7 @@ enum SessionType {
   TIMED_DRILL
   ADAPTIVE
   FREE_TRIAL
+  MIXED_PRACTICE
 }
 
 enum ExamType {
