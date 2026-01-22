@@ -6,7 +6,7 @@ import prisma from '../config/database.js';
 export const AccessTiers = {
   FREE_TRIAL: 'free-trial-only',
   BASIC: 'apcs-practice-access',
-  FULL: 'apcs-test-access', // Highest tier - includes everything
+  FULL: 'apcs-test-access', // Includes practice access
   PREMIUM: 'apcs-exam', // Premium full exam access
 } as const;
 
@@ -20,7 +20,7 @@ export interface UserAccess {
   canAccessPractice: boolean;
   canAccessTests: boolean;
   canAccessCourse: boolean;
-  canAccessPremiumExam: boolean; // NEW
+  canAccessPremiumExam: boolean;
   accessTier: AccessTier;
 }
 
@@ -70,23 +70,39 @@ export async function checkUserAccess(userId: string): Promise<UserAccess> {
   // Check if premium is active
   const isPremiumActive = user.isPremium && (!user.premiumUntil || new Date(user.premiumUntil) > new Date());
 
-  // Check access tiers (higher tier includes lower tiers)
+  // Check access tiers
   const hasPremiumTag = tags.includes(AccessTiers.PREMIUM);
   const hasPremium = hasPremiumTag || isPremiumActive;
-  const hasFull = tags.includes(AccessTiers.FULL) || hasPremium;
-  const hasBasic = tags.includes(AccessTiers.BASIC);
-  const hasTrial = !user.hasUsedFreeTrial || hasBasic;
+  const hasFullTag = tags.includes(AccessTiers.FULL);
+  const hasFull = hasFullTag || hasPremium; // Premium includes Full
+  const hasBasicTag = tags.includes(AccessTiers.BASIC);
+  const hasBasic = hasBasicTag || hasFull; // Full includes Basic
+  
+  // Free trial: ONLY available if they haven't used it yet AND have no other access
+  const hasFreeTrialAccess = !user.hasUsedFreeTrial;
+
+  // Determine access tier
+  let accessTier: AccessTier = 'none';
+  if (hasPremium) {
+    accessTier = 'premium';
+  } else if (hasFull) {
+    accessTier = 'full';
+  } else if (hasBasic) {
+    accessTier = 'basic';
+  } else if (hasFreeTrialAccess) {
+    accessTier = 'trial';
+  }
 
   return {
-    hasFreeTrialAccess: hasTrial,
+    hasFreeTrialAccess: hasFreeTrialAccess, // True ONLY if not used yet
     hasBasicAccess: hasBasic,
     hasFullAccess: hasFull,
     hasPremiumAccess: hasPremium,
-    canAccessPractice: hasFull, // Basic or higher
-    canAccessTests: hasFull, // Full or higher
-    canAccessCourse: hasFull, // Full or higher
+    canAccessPractice: hasBasic, // Requires at least Basic (or Full/Premium)
+    canAccessTests: hasFull, // Requires Full or Premium
+    canAccessCourse: hasFull, // Requires Full or Premium
     canAccessPremiumExam: hasPremium, // Premium only
-    accessTier: hasPremium ? 'premium' : hasFull ? 'full' : hasBasic ? 'basic' : hasTrial ? 'trial' : 'none',
+    accessTier: accessTier,
   };
 }
 
