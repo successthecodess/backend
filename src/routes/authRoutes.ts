@@ -751,7 +751,7 @@ router.post('/oauth/student/signup', async (req, res) => {
       email,
       locationId: companyAuth.locationId,
       source: 'AP CS Question Bank - Self Registration',
-      tags: ['student', 'ap-cs', 'self-registered'],
+      tags: ['student', 'ap-cs', 'apcsa-self-registered'],
       customFields: [
         { key: 'total_questions_answered', value: '0' },
         { key: 'overall_accuracy', value: '0' },
