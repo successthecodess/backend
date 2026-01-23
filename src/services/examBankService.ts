@@ -201,26 +201,48 @@ export class ExamBankService {
     explanation?: string;
     approved?: boolean;
   }) {
-    const question = await prisma.examBankQuestion.create({
-      data: {
-        unitId: data.unitId,
-        questionType: 'FRQ',
-        frqType: data.frqType,
-        questionText: data.questionText,
-        promptText: data.promptText,
-        starterCode: data.starterCode,
-        frqParts: data.frqParts,
-        maxPoints: data.maxPoints || 9,
-        explanation: data.explanation,
-        approved: data.approved ?? false,
-        aiGenerated: false,
-      },
-      include: {
-        unit: true,
-      },
+    // VALIDATE: Check if unit exists
+    const unit = await prisma.unit.findUnique({
+      where: { id: data.unitId },
     });
 
-    return question;
+    if (!unit) {
+      throw new AppError(`Unit with ID ${data.unitId} does not exist`, 400);
+    }
+
+    console.log('✅ Unit validated:', unit.name);
+
+    try {
+      const question = await prisma.examBankQuestion.create({
+        data: {
+          unitId: data.unitId,
+          questionType: 'FRQ',
+          frqType: data.frqType,
+          questionText: data.questionText,
+          promptText: data.promptText,
+          starterCode: data.starterCode,
+          frqParts: data.frqParts,
+          maxPoints: data.maxPoints || 9,
+          explanation: data.explanation,
+          approved: data.approved ?? false,
+          aiGenerated: false,
+        },
+        include: {
+          unit: true,
+        },
+      });
+
+      console.log('✅ FRQ question created:', question.id);
+      return question;
+    } catch (error: any) {
+      console.error('❌ Failed to create FRQ question:', error);
+      
+      if (error.code === 'P2003') {
+        throw new AppError('Invalid unit selected. Please refresh the page and try again.', 400);
+      }
+      
+      throw error;
+    }
   }
 
   async getExamBankQuestions(filters: {
