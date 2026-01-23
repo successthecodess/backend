@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import fullExamService from '../services/fullExamService.js';
 import { AppError, asyncHandler } from '../middleware/errorHandler.js';
 import prisma from '../config/database.js';
+
 // Start full exam
 export const startFullExam = asyncHandler(async (req: Request, res: Response) => {
   const { userId } = req.body;
@@ -13,13 +14,13 @@ export const startFullExam = asyncHandler(async (req: Request, res: Response) =>
     data: examData,
   });
 });
-// Add this to fullExamController.ts temporarily for debugging
+
+// Debug exam attempt
 export const debugExamAttempt = asyncHandler(async (req: Request, res: Response) => {
   const { examAttemptId } = req.params;
 
   console.log('🔍 Debug: Looking for exam attempt:', examAttemptId);
 
-  // Check if it exists
   const attempt = await prisma.fullExamAttempt.findUnique({
     where: { id: examAttemptId },
   });
@@ -35,7 +36,6 @@ export const debugExamAttempt = asyncHandler(async (req: Request, res: Response)
     });
   }
 
-  // Check all attempts for this user
   if (req.user?.userId) {
     const userAttempts = await prisma.fullExamAttempt.findMany({
       where: { userId: req.user.userId },
@@ -60,6 +60,7 @@ export const debugExamAttempt = asyncHandler(async (req: Request, res: Response)
     },
   });
 });
+
 // Submit MCQ answer
 export const submitMCQAnswer = asyncHandler(async (req: Request, res: Response) => {
   const { examAttemptId, orderIndex, userAnswer, timeSpent } = req.body;
@@ -101,7 +102,6 @@ export const getExamAttempt = asyncHandler(async (req: Request, res: Response) =
 
   console.log('📋 Fetching exam attempt:', examAttemptId);
 
-  // Validate examAttemptId
   if (!examAttemptId || examAttemptId === 'undefined' || examAttemptId === 'null') {
     throw new AppError('Invalid exam attempt ID', 400);
   }
@@ -123,6 +123,7 @@ export const getExamAttempt = asyncHandler(async (req: Request, res: Response) =
     throw error;
   }
 });
+
 // Flag for review
 export const flagMCQForReview = asyncHandler(async (req: Request, res: Response) => {
   const { examAttemptId, orderIndex, flagged } = req.body;
@@ -147,9 +148,11 @@ export const submitFullExam = asyncHandler(async (req: Request, res: Response) =
   });
 });
 
-// Get exam results with FRQ solutions
+// Get exam results with FRQ solutions AND RUBRICS
 export const getExamResults = asyncHandler(async (req: Request, res: Response) => {
   const { examAttemptId } = req.params;
+
+  console.log('📊 Fetching exam results for:', examAttemptId);
 
   const examAttempt = await fullExamService.getExamAttempt(examAttemptId);
 
@@ -179,22 +182,58 @@ export const getExamResults = asyncHandler(async (req: Request, res: Response) =
         : examAttempt.recommendations)
     : null;
 
-  // Include FRQ details with solutions and rubrics
-  const frqDetails = examAttempt.frqResponses.map((frq: any) => ({
-    frqNumber: frq.frqNumber,
-    userCode: frq.userCode,
-    partResponses: frq.partResponses,
-    timeSpent: frq.timeSpent,
-    // Include the solutions and rubrics
-    question: {
-      questionText: frq.question.questionText,
-      promptText: frq.question.promptText,
-      starterCode: frq.question.starterCode,
-      frqParts: frq.question.frqParts,
-      maxPoints: frq.question.maxPoints,
-      explanation: frq.question.explanation,
-    },
-  }));
+  // Include FRQ details with solutions AND rubrics
+  const frqDetails = examAttempt.frqResponses.map((frq: any) => {
+    console.log(`📝 Processing FRQ ${frq.frqNumber}:`, {
+      hasQuestion: !!frq.question,
+      hasParts: !!frq.question?.frqParts,
+      partsCount: frq.question?.frqParts?.length || 0,
+    });
+
+    // Parse frqParts if it's a string
+    let frqParts = frq.question?.frqParts;
+    if (typeof frqParts === 'string') {
+      try {
+        frqParts = JSON.parse(frqParts);
+      } catch (error) {
+        console.error('Failed to parse frqParts:', error);
+        frqParts = [];
+      }
+    }
+
+    return {
+      frqNumber: frq.frqNumber,
+      userCode: frq.userCode,
+      partResponses: frq.partResponses,
+      timeSpent: frq.timeSpent,
+      // Include the complete question with rubrics
+      question: {
+        questionText: frq.question?.questionText || '',
+        promptText: frq.question?.promptText || '',
+        starterCode: frq.question?.starterCode || '',
+        maxPoints: frq.question?.maxPoints || 9,
+        explanation: frq.question?.explanation || '',
+        // IMPORTANT: Include the rubrics for each part
+        frqParts: Array.isArray(frqParts) ? frqParts.map((part: any) => ({
+          partLetter: part.partLetter,
+          partDescription: part.partDescription,
+          maxPoints: part.maxPoints,
+          // RUBRIC DATA - this is what was missing
+          rubricItems: Array.isArray(part.rubricItems) ? part.rubricItems : [],
+          sampleSolution: part.sampleSolution || '',
+        })) : [],
+      },
+    };
+  });
+
+  console.log('✅ Returning FRQ details with rubrics:', {
+    frqCount: frqDetails.length,
+    hasRubrics: frqDetails.map((f: any) => ({
+      frqNumber: f.frqNumber,
+      partsCount: f.question?.frqParts?.length || 0,
+      hasRubricData: f.question?.frqParts?.some((p: any) => p.rubricItems?.length > 0),
+    })),
+  });
 
   res.status(200).json({
     status: 'success',
@@ -203,12 +242,12 @@ export const getExamResults = asyncHandler(async (req: Request, res: Response) =
       mcqScore: examAttempt.mcqScore,
       mcqPercentage: examAttempt.mcqPercentage,
       mcqTotal: 42,
-      apScoreRanges, // Show what they could get with different FRQ performance
+      apScoreRanges,
       unitBreakdown,
       strengths: examAttempt.strengths,
       weaknesses: examAttempt.weaknesses,
       recommendations,
-      frqDetails, // Include solutions and rubrics
+      frqDetails, // Now includes complete rubrics
       submittedAt: examAttempt.submittedAt,
       totalTimeSpent: examAttempt.totalTimeSpent,
     },
