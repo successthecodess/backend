@@ -2,20 +2,16 @@ import prisma from '../config/database.js';
 import { FRQType } from '@prisma/client';
 import { AppError } from '../middleware/errorHandler.js';
 
-// Cache for questions to avoid repeated DB calls
 interface CachedQuestions {
-  questions: Map<string, any[]>; // unitId -> questions
+  questions: Map<string, any[]>;
   timestamp: number;
 }
 
 let questionCache: CachedQuestions | null = null;
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const CACHE_TTL = 5 * 60 * 1000;
 
 export class ExamBankService {
   
-  /**
-   * Preload all questions into cache
-   */
   private async ensureCache(): Promise<Map<string, any[]>> {
     if (questionCache && Date.now() - questionCache.timestamp < CACHE_TTL) {
       return questionCache.questions;
@@ -24,7 +20,6 @@ export class ExamBankService {
     console.log('📦 Loading question cache...');
     const startTime = Date.now();
 
-    // Single query to get ALL approved questions
     const allQuestions = await prisma.question.findMany({
       where: { approved: true },
       include: {
@@ -33,7 +28,6 @@ export class ExamBankService {
       },
     });
 
-    // Group by unitId
     const questionsByUnit = new Map<string, any[]>();
     for (const q of allQuestions) {
       const existing = questionsByUnit.get(q.unitId) || [];
@@ -50,24 +44,17 @@ export class ExamBankService {
     return questionsByUnit;
   }
 
-  /**
-   * Get 42 random MCQ questions for exam - OPTIMIZED
-   * Uses cache and parallel processing
-   */
   async getRandomMCQForExam(): Promise<any[]> {
     console.log('🎲 Selecting 42 random MCQ questions (optimized)...');
     const startTime = Date.now();
 
-    // Get cached questions (single DB call or cache hit)
     const questionsByUnit = await this.ensureCache();
 
-    // Get units
     const units = await prisma.unit.findMany({
       orderBy: { unitNumber: 'asc' },
       select: { id: true, unitNumber: true, name: true },
     });
 
-    // AP CS A distribution
     const distribution: Record<number, number> = {
       1: 3, 2: 4, 3: 6, 4: 8, 5: 5, 6: 5, 7: 5, 8: 4, 9: 1, 10: 1,
     };
@@ -85,21 +72,16 @@ export class ExamBankService {
         continue;
       }
 
-      // Fast shuffle and select
       const selected = this.fastRandomSelect(unitQuestions, targetCount);
       selectedQuestions.push(...selected);
     }
 
-    // Final shuffle
     this.shuffleInPlace(selectedQuestions);
 
     console.log(`✅ Selected ${selectedQuestions.length}/42 MCQs in ${Date.now() - startTime}ms`);
     return selectedQuestions;
   }
 
-  /**
-   * Fast random selection without full shuffle
-   */
   private fastRandomSelect<T>(array: T[], count: number): T[] {
     if (array.length <= count) return [...array];
     
@@ -117,9 +99,6 @@ export class ExamBankService {
     return result;
   }
 
-  /**
-   * In-place shuffle (faster than creating new array)
-   */
   private shuffleInPlace<T>(array: T[]): void {
     for (let i = array.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
@@ -127,23 +106,16 @@ export class ExamBankService {
     }
   }
 
-  /**
-   * Shuffle array (returns new array)
-   */
   private shuffleArray<T>(array: T[]): T[] {
     const shuffled = [...array];
     this.shuffleInPlace(shuffled);
     return shuffled;
   }
 
-  /**
-   * Get 4 random FRQ questions - OPTIMIZED with single query
-   */
   async getFRQForExam(): Promise<any[]> {
     console.log('🎲 Selecting 4 random FRQ questions...');
     const startTime = Date.now();
 
-    // Single query to get all approved FRQs
     const allFRQs = await prisma.examBankQuestion.findMany({
       where: {
         questionType: 'FRQ',
@@ -155,7 +127,6 @@ export class ExamBankService {
       },
     });
 
-    // Group by frqType
     const frqsByType = new Map<string, any[]>();
     for (const frq of allFRQs) {
       if (!frq.frqType) continue;
@@ -173,7 +144,6 @@ export class ExamBankService {
         console.warn(`⚠️ No approved ${frqType} questions`);
         continue;
       }
-      // Random select one
       const randomIndex = Math.floor(Math.random() * questions.length);
       selectedQuestions.push(questions[randomIndex]);
     }
@@ -182,9 +152,6 @@ export class ExamBankService {
     return selectedQuestions;
   }
 
-  /**
-   * Invalidate cache (call when questions are added/updated/deleted)
-   */
   invalidateCache(): void {
     questionCache = null;
     console.log('🗑️ Question cache invalidated');
@@ -201,16 +168,23 @@ export class ExamBankService {
     explanation?: string;
     approved?: boolean;
   }) {
-    // VALIDATE: Check if unit exists
-    const unit = await prisma.unit.findUnique({
+    console.log('📝 Creating FRQ question with data:', {
+      unitId: data.unitId,
+      frqType: data.frqType,
+      questionText: data.questionText?.substring(0, 50),
+    });
+
+    // Validate that the unitId exists in ExamUnit table
+    const examUnit = await prisma.examUnit.findUnique({
       where: { id: data.unitId },
     });
 
-    if (!unit) {
-      throw new AppError(`Unit with ID ${data.unitId} does not exist`, 400);
-    }
+    console.log('✅ Unit validated:', examUnit?.name);
 
-    console.log('✅ Unit validated:', unit.name);
+    if (!examUnit) {
+      console.error('❌ Invalid unit ID:', data.unitId);
+      throw new AppError('Invalid unit selected. Please refresh the page and try again.', 400);
+    }
 
     try {
       const question = await prisma.examBankQuestion.create({
@@ -236,11 +210,6 @@ export class ExamBankService {
       return question;
     } catch (error: any) {
       console.error('❌ Failed to create FRQ question:', error);
-      
-      if (error.code === 'P2003') {
-        throw new AppError('Invalid unit selected. Please refresh the page and try again.', 400);
-      }
-      
       throw error;
     }
   }
@@ -347,26 +316,43 @@ export class ExamBankService {
   }
 
   async getExamUnits() {
-    const units = await prisma.unit.findMany({
+    // Return ExamUnits (not Units)
+    const examUnits = await prisma.examUnit.findMany({
+      where: { isActive: true },
       orderBy: { unitNumber: 'asc' },
-      select: { id: true, unitNumber: true, name: true },
+      select: {
+        id: true,
+        unitNumber: true,
+        name: true,
+        description: true,
+        examWeight: true,
+      },
     });
 
-    // Use cache for counts if available
-    const questionsByUnit = await this.ensureCache();
+    // Get FRQ counts for each unit
+    const unitsWithCounts = await Promise.all(
+      examUnits.map(async (unit) => {
+        const frqCount = await prisma.examBankQuestion.count({
+          where: {
+            unitId: unit.id,
+            questionType: 'FRQ',
+            approved: true,
+            isActive: true,
+          },
+        });
 
-    return units.map((unit) => {
-      const questions = questionsByUnit.get(unit.id) || [];
-      return {
-        ...unit,
-        mcqCount: questions.length,
-        frqCount: 0, // FRQs are separate
-      };
-    });
+        return {
+          ...unit,
+          mcqCount: 0, // MCQs are in separate Unit table
+          frqCount,
+        };
+      })
+    );
+
+    return unitsWithCounts;
   }
 
   async getQuestionCounts() {
-    // Use cache for MCQ count
     const questionsByUnit = await this.ensureCache();
     let mcqCount = 0;
     for (const questions of questionsByUnit.values()) {

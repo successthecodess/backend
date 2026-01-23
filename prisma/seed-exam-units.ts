@@ -2,88 +2,113 @@ import { PrismaClient } from '@prisma/client';
 
 const prisma = new PrismaClient();
 
-async function seedExamUnits() {
-  console.log('🌱 Seeding 2025 AP CS A Exam Units...');
+async function main() {
+  console.log('🌱 Seeding ExamUnits...');
 
   const units = [
     {
       unitNumber: 1,
-      name: 'Using Objects and Methods',
-      description: 'Fundamentals of Java programming, reference data, and methods',
-      examWeight: '15-25%',
-      topics: [
-        'Primitive vs. Reference Types',
-        'Objects and Classes',
-        'Method Calls and Returns',
-        'String Methods',
-        'Math Class',
-        'Wrapper Classes',
-        'Method Overloading',
-      ],
+      name: 'Primitive Types',
+      description: 'Variables, data types, operators',
+      examWeight: '2.5-5%',
+      topics: ['Variables', 'Data Types', 'Operators', 'Type Casting'],
     },
     {
       unitNumber: 2,
-      name: 'Selection and Iteration',
-      description: 'Conditional statements, loops, and algorithmic problem-solving',
-      examWeight: '25-35%',
-      topics: [
-        'Boolean Expressions',
-        'if, else if, else',
-        'Compound Boolean Expressions',
-        'while Loops',
-        'for Loops',
-        'Nested Loops',
-        'break and continue',
-        'Algorithm Design',
-      ],
+      name: 'Using Objects',
+      description: 'Creating and using objects, methods',
+      examWeight: '5-7.5%',
+      topics: ['Objects', 'Methods', 'Strings', 'Math Class'],
     },
     {
       unitNumber: 3,
-      name: 'Class Creation',
-      description: 'Designing classes with behaviors and attributes',
-      examWeight: '10-18%',
-      topics: [
-        'Class Design',
-        'Constructors',
-        'Instance Variables',
-        'Methods',
-        'Accessors and Mutators',
-        'this Keyword',
-        'Static vs. Instance',
-        'Encapsulation',
-      ],
+      name: 'Boolean Expressions and if Statements',
+      description: 'Conditional logic and control flow',
+      examWeight: '15-17.5%',
+      topics: ['Boolean', 'if Statements', 'Logical Operators', 'Comparing Objects'],
     },
     {
       unitNumber: 4,
-      name: 'Data Collections',
-      description: 'Working with arrays, ArrayLists, and 2D arrays',
-      examWeight: '30-40%',
-      topics: [
-        'Array Creation and Access',
-        'Array Traversal',
-        'ArrayList Class',
-        'ArrayList Methods',
-        '2D Arrays',
-        '2D Array Traversal',
-        'File I/O',
-        'Dataset Manipulation',
-        'Searching and Sorting',
-      ],
+      name: 'Iteration',
+      description: 'Loops and iteration',
+      examWeight: '17.5-22.5%',
+      topics: ['while Loops', 'for Loops', 'String Algorithms', 'Nested Loops'],
+    },
+    {
+      unitNumber: 5,
+      name: 'Writing Classes',
+      description: 'Class structure, methods, constructors',
+      examWeight: '5-7.5%',
+      topics: ['Classes', 'Methods', 'Constructors', 'Instance Variables', 'this keyword'],
+    },
+    {
+      unitNumber: 6,
+      name: 'Array',
+      description: 'Arrays and array algorithms',
+      examWeight: '10-15%',
+      topics: ['Arrays', 'Traversing Arrays', 'Array Algorithms'],
+    },
+    {
+      unitNumber: 7,
+      name: 'ArrayList',
+      description: 'ArrayList class and algorithms',
+      examWeight: '2.5-7.5%',
+      topics: ['ArrayList', 'ArrayList Methods', 'ArrayList Algorithms'],
+    },
+    {
+      unitNumber: 8,
+      name: '2D Array',
+      description: 'Two-dimensional arrays',
+      examWeight: '7.5-10%',
+      topics: ['2D Arrays', 'Traversing 2D Arrays', '2D Array Algorithms'],
+    },
+    {
+      unitNumber: 9,
+      name: 'Inheritance',
+      description: 'Inheritance and polymorphism',
+      examWeight: '5-10%',
+      topics: ['Inheritance', 'super keyword', 'Polymorphism', 'Object Class'],
+    },
+    {
+      unitNumber: 10,
+      name: 'Recursion',
+      description: 'Recursive methods and algorithms',
+      examWeight: '5-7.5%',
+      topics: ['Recursion', 'Recursive Algorithms', 'Base Cases'],
     },
   ];
 
   for (const unit of units) {
     await prisma.examUnit.upsert({
       where: { unitNumber: unit.unitNumber },
-      update: unit,
-      create: unit,
+      update: {
+        name: unit.name,
+        description: unit.description,
+        examWeight: unit.examWeight,
+        topics: unit.topics,
+        isActive: true,
+      },
+      create: {
+        unitNumber: unit.unitNumber,
+        name: unit.name,
+        description: unit.description,
+        examWeight: unit.examWeight,
+        topics: unit.topics,
+        isActive: true,
+      },
     });
-    console.log(`✅ Created/Updated Unit ${unit.unitNumber}: ${unit.name}`);
+
+    console.log(`✅ Seeded Unit ${unit.unitNumber}: ${unit.name}`);
   }
 
-  console.log('✅ Exam units seeded successfully!');
+  console.log('✅ All ExamUnits seeded successfully!');
 }
 
-seedExamUnits()
-  .catch(console.error)
-  .finally(() => prisma.$disconnect());
+main()
+  .catch((e) => {
+    console.error('❌ Seed failed:', e);
+    
+  })
+  .finally(async () => {
+    await prisma.$disconnect();
+  });
