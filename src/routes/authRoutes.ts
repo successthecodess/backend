@@ -4,6 +4,7 @@ import jwt from 'jsonwebtoken';
 import prisma from '../config/database.js';
 import { checkUserAccess } from '../middleware/accessControl.js';
 import { Resend } from 'resend';
+import bcrypt from 'bcryptjs';
 
 const router = Router();
 
@@ -22,7 +23,7 @@ async function sendMagicLink(email: string, token: string) {
   
   try {
     const { data, error } = await resend.emails.send({
-      from: 'AP CS Question Bank <noreply@csaprep.aceapcomputerscience.com>', // Change to your domain when verified
+      from: 'AP CS Question Bank <noreply@csaprep.aceapcomputerscience.com>',
       to: email,
       subject: 'Your Login Link - AP CS Question Bank',
       html: `
@@ -399,6 +400,408 @@ async function checkAndGrantAdminAccess(email: string, userId: string): Promise<
 }
 
 // ==========================================
+// DEBUG ENDPOINTS
+// ==========================================
+
+router.get('/oauth/debug/test-contact-fetch', async (req, res) => {
+  try {
+    const companyAuth = await prisma.gHLCompanyAuth.findFirst({
+      orderBy: { authorizedAt: 'desc' }
+    });
+
+    if (!companyAuth) {
+      return res.status(404).json({ error: 'No authorization found' });
+    }
+
+    const accessToken = await getValidToken(companyAuth);
+
+    const results: any = {
+      locationId: companyAuth.locationId,
+      companyId: companyAuth.companyId,
+      tests: {}
+    };
+
+    const startTime = Date.now();
+    const testContact = await searchContactByEmailParallel(
+      'test@example.com',
+      accessToken,
+      companyAuth.locationId!,
+      companyAuth.companyId
+    );
+    const duration = Date.now() - startTime;
+
+    results.parallelSearchTest = {
+      duration: `${duration}ms`,
+      found: !!testContact,
+      contact: testContact ? { email: testContact.email, name: `${testContact.firstName} ${testContact.lastName}` } : null,
+    };
+
+    res.json(results);
+  } catch (error: any) {
+    res.status(500).json({ 
+      error: error.message,
+      details: error.response?.data
+    });
+  }
+});
+
+router.get('/oauth/debug/token-status', async (req, res) => {
+  try {
+    const companyAuth = await prisma.gHLCompanyAuth.findFirst({
+      orderBy: { authorizedAt: 'desc' }
+    });
+
+    if (!companyAuth) {
+      return res.json({
+        status: 'not_found',
+        message: 'No company authorization found'
+      });
+    }
+
+    const now = new Date();
+    const expiry = new Date(companyAuth.tokenExpiry);
+    const timeUntilExpiry = expiry.getTime() - now.getTime();
+    const hoursUntilExpiry = timeUntilExpiry / (1000 * 60 * 60);
+
+    res.json({
+      status: 'found',
+      companyId: companyAuth.companyId,
+      locationId: companyAuth.locationId,
+      authorizedBy: companyAuth.authorizedBy,
+      authorizedAt: companyAuth.authorizedAt,
+      tokenExpiry: companyAuth.tokenExpiry,
+      currentTime: now,
+      isExpired: now >= expiry,
+      hoursUntilExpiry: hoursUntilExpiry.toFixed(2),
+      hasRefreshToken: !!companyAuth.refreshToken,
+      cacheSize: contactCache.size,
+    });
+  } catch (error: any) {
+    res.status(500).json({ 
+      error: error.message,
+    });
+  }
+});
+
+router.post('/oauth/debug/force-refresh', async (req, res) => {
+  try {
+    const companyAuth = await prisma.gHLCompanyAuth.findFirst({
+      orderBy: { authorizedAt: 'desc' }
+    });
+
+    if (!companyAuth) {
+      return res.status(404).json({ error: 'No authorization found' });
+    }
+
+    const newToken = await refreshCompanyToken(
+      companyAuth.companyId, 
+      companyAuth.refreshToken
+    );
+
+    const updated = await prisma.gHLCompanyAuth.findUnique({
+      where: { companyId: companyAuth.companyId }
+    });
+
+    res.json({
+      success: true,
+      message: 'Token refreshed successfully',
+      oldExpiry: companyAuth.tokenExpiry,
+      newExpiry: updated?.tokenExpiry,
+    });
+  } catch (error: any) {
+    res.status(500).json({ 
+      error: error.message,
+    });
+  }
+});
+
+router.post('/oauth/debug/clear-cache', async (req, res) => {
+  const sizeBefore = contactCache.size;
+  contactCache.clear();
+  res.json({
+    success: true,
+    message: 'Cache cleared',
+    entriesCleared: sizeBefore,
+  });
+});
+
+// ==========================================
+// ADMIN AUTHORIZATION
+// ==========================================
+
+router.get('/oauth/admin/authorize', (req, res) => {
+  const params = new URLSearchParams({
+    response_type: 'code',
+    redirect_uri: `${process.env.BACKEND_URL}/api/auth/oauth/admin/callback`,
+    client_id: process.env.GHL_CLIENT_ID!,
+    scope: 'contacts.readonly contacts.write locations/customValues.readonly locations/customValues.write locations/customFields.readonly locations/customFields.write locations.readonly',
+  });
+
+  const authUrl = `${GHL_AUTH_URL}?${params}`;
+  res.json({ authUrl });
+});
+
+router.get('/oauth/admin/callback', async (req, res) => {
+  const { code, error } = req.query;
+
+  if (error || !code) {
+    return res.redirect(`${process.env.FRONTEND_URL}/admin/ghl-setup?error=authorization_failed`);
+  }
+
+  try {
+    const tokenResponse = await axios.post(
+      GHL_TOKEN_URL,
+      new URLSearchParams({
+        client_id: process.env.GHL_CLIENT_ID!,
+        client_secret: process.env.GHL_CLIENT_SECRET!,
+        grant_type: 'authorization_code',
+        code: code as string,
+        redirect_uri: `${process.env.BACKEND_URL}/api/auth/oauth/admin/callback`,
+      }),
+      {
+        headers: { 
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Accept': 'application/json'
+        }
+      }
+    );
+
+    const { access_token, refresh_token, expires_in, locationId, companyId, userId } = tokenResponse.data;
+    const expiryDate = new Date(Date.now() + (expires_in - 300) * 1000);
+
+    const userResponse = await axios.get(
+      `${GHL_API_BASE}/users/${userId}`,
+      {
+        headers: {
+          'Authorization': `Bearer ${access_token}`,
+          'Version': '2021-07-28'
+        }
+      }
+    );
+
+    const adminEmail = userResponse.data.email;
+
+    await prisma.gHLCompanyAuth.deleteMany({
+      where: { companyId }
+    });
+
+    await prisma.gHLCompanyAuth.create({
+      data: {
+        companyId,
+        locationId: locationId || null,
+        accessToken: access_token,
+        refreshToken: refresh_token,
+        tokenExpiry: expiryDate,
+        authorizedBy: adminEmail,
+      },
+    });
+
+    contactCache.clear();
+
+    res.redirect(`${process.env.FRONTEND_URL}/admin/ghl-setup?success=true&companyId=${companyId}`);
+  } catch (error: any) {
+    res.redirect(`${process.env.FRONTEND_URL}/admin/ghl-setup?error=setup_failed`);
+  }
+});
+
+router.get('/oauth/admin/status', async (req, res) => {
+  try {
+    const auth = await prisma.gHLCompanyAuth.findFirst({
+      orderBy: { authorizedAt: 'desc' }
+    });
+
+    if (!auth) {
+      return res.json({
+        authorized: false,
+        message: 'No company authorization found'
+      });
+    }
+
+    const now = new Date();
+    const expiry = new Date(auth.tokenExpiry);
+    const isExpired = now >= expiry;
+    const hoursUntilExpiry = (expiry.getTime() - now.getTime()) / (1000 * 60 * 60);
+
+    res.json({
+      authorized: !isExpired,
+      companyId: auth.companyId,
+      locationId: auth.locationId,
+      authorizedBy: auth.authorizedBy,
+      authorizedAt: auth.authorizedAt,
+      tokenExpiry: auth.tokenExpiry,
+      currentTime: now,
+      isExpired,
+      hoursUntilExpiry: hoursUntilExpiry.toFixed(2),
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: 'Failed to check authorization status' });
+  }
+});
+
+// ==========================================
+// PUBLIC ENDPOINTS
+// ==========================================
+
+router.get('/oauth/me', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'No token provided' });
+    }
+
+    const token = authHeader.substring(7);
+    
+    const decoded = jwt.verify(token, process.env.JWT_SECRET!) as {
+      userId: string;
+      email: string;
+      name: string;
+      ghlUserId?: string;
+    };
+
+    const user = await prisma.user.findUnique({
+      where: { id: decoded.userId },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        role: true,
+        isAdmin: true,
+        isStaff: true,
+        ghlTags: true,
+        ghlUserId: true,
+        ghlLocationId: true,
+        ghlCompanyId: true,
+        hasAccessToQuestionBank: true,
+        hasAccessToTimedPractice: true,
+        hasAccessToAnalytics: true,
+        isPremium: true,
+        premiumUntil: true,
+        createdAt: true,
+        lastActive: true,
+      },
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { lastActive: new Date() }
+    });
+
+    res.json(user);
+  } catch (error: any) {
+    console.error('Failed to fetch user info:', error);
+    
+    if (error.name === 'JsonWebTokenError') {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+    
+    res.status(500).json({ error: 'Failed to fetch user info' });
+  }
+});
+
+router.get('/oauth/features', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'No token provided' });
+    }
+
+    const token = authHeader.substring(7);
+    
+    try {
+      jwt.verify(token, process.env.JWT_SECRET!);
+    } catch (error) {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+
+    const features = await prisma.featureFlag.findMany({
+      where: { isEnabled: true },
+      select: {
+        id: true,
+        name: true,
+        displayName: true,
+        description: true,
+        requiredGhlTag: true,
+        requiresPremium: true,
+        requiresStaff: true,
+        isEnabled: true,
+      },
+      orderBy: { displayName: 'asc' }
+    });
+
+    res.json(features);
+  } catch (error: any) {
+    console.error('Failed to fetch features:', error);
+    res.status(500).json({ error: 'Failed to fetch features' });
+  }
+});
+
+router.get('/oauth/courses', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'No token provided' });
+    }
+
+    const token = authHeader.substring(7);
+    
+    try {
+      jwt.verify(token, process.env.JWT_SECRET!);
+    } catch (error) {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+
+    const courses = await prisma.courseAccess.findMany({
+      where: { isActive: true },
+      select: {
+        id: true,
+        courseName: true,
+        courseSlug: true,
+        requiredGhlTag: true,
+        fallbackToFlag: true,
+        isActive: true,
+      },
+      orderBy: { courseName: 'asc' }
+    });
+
+    res.json(courses);
+  } catch (error: any) {
+    console.error('Failed to fetch courses:', error);
+    res.status(500).json({ error: 'Failed to fetch courses' });
+  }
+});
+
+router.get('/oauth/my-access', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    
+    if (!authHeader) {
+      return res.status(401).json({ error: 'No token provided' });
+    }
+
+    const token = authHeader.substring(7);
+    const decoded = jwt.verify(token, process.env.JWT_SECRET!) as { userId: string };
+
+    const access = await checkUserAccess(decoded.userId);
+    
+    console.log('🔐 Access check for user:', decoded.userId);
+    console.log('   Tags:', access.accessTier);
+    console.log('   hasPremiumAccess:', access.hasPremiumAccess);
+
+    res.json(access);
+  } catch (error) {
+    console.error('Access check error:', error);
+    res.status(401).json({ error: 'Invalid token' });
+  }
+});
+
+// ==========================================
 // MAGIC LINK AUTHENTICATION
 // ==========================================
 
@@ -432,7 +835,6 @@ router.post('/oauth/student/request-login', async (req, res) => {
       });
     }
 
-    // Check if email exists in GHL
     let ghlContact: any = null;
     let retryCount = 0;
     const maxRetries = 2;
@@ -467,14 +869,12 @@ router.post('/oauth/student/request-login', async (req, res) => {
       console.log('❌ Email not found in TutorBoss');
       console.log('========================================\n');
       
-      // Don't reveal if email exists or not (security best practice)
       return res.json({
         success: true,
         message: 'If this email is registered, you will receive a login link shortly.'
       });
     }
 
-    // Generate magic link token (expires in 15 minutes)
     const magicToken = jwt.sign(
       {
         email: ghlContact.email,
@@ -485,7 +885,6 @@ router.post('/oauth/student/request-login', async (req, res) => {
       { expiresIn: '15m' }
     );
 
-    // Send email
     const emailSent = await sendMagicLink(ghlContact.email, magicToken);
 
     if (!emailSent) {
@@ -523,7 +922,6 @@ router.post('/oauth/student/verify-magic-link', async (req, res) => {
   try {
     console.log('🔐 ========== VERIFYING MAGIC LINK ==========');
 
-    // Verify token
     const decoded = jwt.verify(token, process.env.JWT_SECRET!) as {
       email: string;
       ghlUserId: string;
@@ -546,7 +944,6 @@ router.post('/oauth/student/verify-magic-link', async (req, res) => {
 
     const accessToken = await getValidToken(companyAuth);
 
-    // Fetch latest data from GHL
     const ghlContact = await searchContactByEmailCached(
       decoded.email,
       accessToken,
@@ -561,9 +958,7 @@ router.post('/oauth/student/verify-magic-link', async (req, res) => {
     }
 
     const fullName = `${ghlContact.firstName || ''} ${ghlContact.lastName || ''}`.trim();
-    const tags = ghlContact.tags || [];
     
-    // Create or update user
     let user = await prisma.user.findFirst({
       where: {
         OR: [
@@ -574,6 +969,9 @@ router.post('/oauth/student/verify-magic-link', async (req, res) => {
     });
 
     if (user) {
+      // EXISTING USER - Only update basic info, DON'T overwrite tags
+      console.log('👤 Existing user login - preserving current permissions');
+      
       user = await prisma.user.update({
         where: { id: user.id },
         data: {
@@ -582,11 +980,14 @@ router.post('/oauth/student/verify-magic-link', async (req, res) => {
           ghlUserId: ghlContact.id,
           ghlLocationId: companyAuth.locationId,
           ghlCompanyId: companyAuth.companyId,
-          ghlTags: tags,
+          // DON'T UPDATE TAGS - preserve admin-set permissions
           lastActive: new Date(),
         },
       });
     } else {
+      // NEW USER - Create with base permissions and "new-student" tag
+      console.log('🆕 New user - creating with base permissions');
+      
       user = await prisma.user.create({
         data: {
           email: ghlContact.email,
@@ -594,7 +995,14 @@ router.post('/oauth/student/verify-magic-link', async (req, res) => {
           ghlUserId: ghlContact.id,
           ghlLocationId: companyAuth.locationId,
           ghlCompanyId: companyAuth.companyId,
-          ghlTags: tags,
+          ghlTags: ['new-student'],
+          isAdmin: false,
+          isStaff: false,
+          role: 'STUDENT',
+          hasAccessToQuestionBank: false,
+          hasAccessToTimedPractice: false,
+          hasAccessToAnalytics: false,
+          isPremium: false,
         },
       });
     }
@@ -605,7 +1013,6 @@ router.post('/oauth/student/verify-magic-link', async (req, res) => {
       where: { id: user.id }
     }) || user;
 
-    // Generate long-lived session token
     const sessionToken = jwt.sign(
       {
         userId: user.id,
@@ -618,6 +1025,7 @@ router.post('/oauth/student/verify-magic-link', async (req, res) => {
     );
 
     console.log('✅ MAGIC LINK VERIFIED - LOGIN SUCCESSFUL');
+    console.log('   User tags:', user.ghlTags);
     console.log('========================================\n');
 
     res.json({
@@ -691,7 +1099,6 @@ router.post('/oauth/student/signup', async (req, res) => {
       });
     }
 
-    // Check if user already exists
     const existingUser = await prisma.user.findUnique({
       where: { email: email.toLowerCase() }
     });
@@ -705,7 +1112,6 @@ router.post('/oauth/student/signup', async (req, res) => {
       });
     }
 
-    // Check GHL
     let existingContact: any = null;
     let retryCount = 0;
     const maxRetries = 2;
@@ -744,14 +1150,13 @@ router.post('/oauth/student/signup', async (req, res) => {
       });
     }
 
-    // Create in GHL
     const contactData: any = {
       firstName,
       lastName,
       email,
       locationId: companyAuth.locationId,
       source: 'AP CS Question Bank - Self Registration',
-      tags: ['student', 'ap-cs', 'apcsa-self-registered'],
+      tags: ['new-student'],
       customFields: [
         { key: 'total_questions_answered', value: '0' },
         { key: 'overall_accuracy', value: '0' },
@@ -780,7 +1185,6 @@ router.post('/oauth/student/signup', async (req, res) => {
 
     const ghlContact = createResponse.data.contact;
 
-    // Generate magic link token
     const magicToken = jwt.sign(
       {
         email: ghlContact.email,
@@ -791,14 +1195,13 @@ router.post('/oauth/student/signup', async (req, res) => {
       { expiresIn: '15m' }
     );
 
-    // Send welcome email with magic link
     const emailSent = await sendMagicLink(ghlContact.email, magicToken);
 
     if (!emailSent) {
       console.error('⚠️ Account created but email failed');
     }
 
-    console.log('✅ SIGNUP SUCCESSFUL');
+    console.log('✅ SIGNUP SUCCESSFUL - Created with "new-student" tag');
     console.log('========================================\n');
 
     res.json({
@@ -829,72 +1232,132 @@ router.post('/oauth/student/signup', async (req, res) => {
 });
 
 // ==========================================
-// OTHER ROUTES
+// ADMIN AUTHENTICATION
 // ==========================================
 
-router.get('/oauth/me', async (req, res) => {
+router.post('/oauth/admin/login', async (req, res) => {
+  const { email, password } = req.body;
+
+  if (!email || !password) {
+    return res.status(400).json({ error: 'Email and password are required' });
+  }
+
   try {
-    const authHeader = req.headers.authorization;
-    
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ error: 'No token provided' });
+    console.log('👨‍💼 ========== ADMIN LOGIN ATTEMPT ==========');
+    console.log('   Email:', email);
+
+    const adminEmail = await prisma.adminEmail.findUnique({
+      where: { email: email.toLowerCase() },
+    });
+
+    if (!adminEmail || !adminEmail.isActive) {
+      console.log('❌ Not an authorized admin email');
+      return res.status(401).json({ error: 'Invalid admin credentials' });
     }
 
-    const token = authHeader.substring(7);
-    
-    const decoded = jwt.verify(token, process.env.JWT_SECRET!) as {
-      userId: string;
-      email: string;
-      name: string;
-      ghlUserId?: string;
-    };
-
-    const user = await prisma.user.findUnique({
-      where: { id: decoded.userId },
-      select: {
-        id: true,
-        email: true,
-        name: true,
-        role: true,
-        isAdmin: true,
-        isStaff: true,
-        ghlTags: true,
-        ghlUserId: true,
-        ghlLocationId: true,
-        ghlCompanyId: true,
-        hasAccessToQuestionBank: true,
-        hasAccessToTimedPractice: true,
-        hasAccessToAnalytics: true,
-        isPremium: true,
-        premiumUntil: true,
-        createdAt: true,
-        lastActive: true,
-      },
+    let user = await prisma.user.findUnique({
+      where: { email: email.toLowerCase() },
     });
 
     if (!user) {
-      return res.status(404).json({ error: 'User not found' });
+      console.log('📝 Creating new admin account');
+      
+      const hashedPassword = await bcrypt.hash(password, 10);
+      
+      user = await prisma.user.create({
+        data: {
+          email: email.toLowerCase(),
+          name: email.split('@')[0],
+          password: hashedPassword,
+          isAdmin: true,
+          isStaff: true,
+          role: 'ADMIN',
+          hasAccessToQuestionBank: true,
+          hasAccessToTimedPractice: true,
+          hasAccessToAnalytics: true,
+          passwordSetAt: new Date(),
+        },
+      });
+
+      console.log('✅ Admin account created');
+    } else {
+      if (!user.isAdmin) {
+        console.log('❌ User exists but is not admin');
+        return res.status(403).json({ error: 'Access denied' });
+      }
+
+      if (!user.password) {
+        console.log('📝 Admin account exists but no password set');
+        
+        const hashedPassword = await bcrypt.hash(password, 10);
+        
+        user = await prisma.user.update({
+          where: { id: user.id },
+          data: {
+            password: hashedPassword,
+            passwordSetAt: new Date(),
+          },
+        });
+
+        console.log('✅ Password set for existing admin');
+      } else {
+        const isValidPassword = await bcrypt.compare(password, user.password);
+
+        if (!isValidPassword) {
+          console.log('❌ Invalid password');
+          return res.status(401).json({ error: 'Invalid admin credentials' });
+        }
+      }
     }
+
+    const token = jwt.sign(
+      {
+        userId: user.id,
+        email: user.email,
+        name: user.name,
+        isAdmin: true,
+        role: 'ADMIN',
+      },
+      process.env.JWT_SECRET!,
+      { expiresIn: '30d' }
+    );
 
     await prisma.user.update({
       where: { id: user.id },
-      data: { lastActive: new Date() }
+      data: { lastActive: new Date() },
     });
 
-    res.json(user);
+    console.log('✅ ADMIN LOGIN SUCCESSFUL');
+    console.log('==========================================\n');
+
+    res.json({
+      success: true,
+      token,
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        isAdmin: user.isAdmin,
+        role: user.role,
+      },
+    });
   } catch (error: any) {
-    console.error('Failed to fetch user info:', error);
-    
-    if (error.name === 'JsonWebTokenError') {
-      return res.status(401).json({ error: 'Invalid token' });
-    }
-    
-    res.status(500).json({ error: 'Failed to fetch user info' });
+    console.error('❌ ADMIN LOGIN FAILED');
+    console.error('   Error:', error.message);
+    console.error('==========================================\n');
+    res.status(500).json({ error: 'Login failed. Please try again.' });
   }
 });
 
-// Find and update this route:
-router.get('/oauth/my-access', async (req, res) => {
+router.post('/oauth/admin/change-password', async (req, res) => {
+  const { currentPassword, newPassword } = req.body;
+
+  if (!newPassword || newPassword.length < 8) {
+    return res.status(400).json({ 
+      error: 'New password must be at least 8 characters long' 
+    });
+  }
+
   try {
     const authHeader = req.headers.authorization;
     
@@ -905,18 +1368,150 @@ router.get('/oauth/my-access', async (req, res) => {
     const token = authHeader.substring(7);
     const decoded = jwt.verify(token, process.env.JWT_SECRET!) as { userId: string };
 
-    const access = await checkUserAccess(decoded.userId);
-    
-    console.log('🔐 Access check for user:', decoded.userId);
-    console.log('   Tags:', access.accessTier);
-    console.log('   hasPracticeTestAccess:', access.hasFullAccess);
+    const user = await prisma.user.findUnique({
+      where: { id: decoded.userId },
+    });
 
-    res.json(access);
-  } catch (error) {
-    console.error('Access check error:', error);
-    res.status(401).json({ error: 'Invalid token' });
+    if (!user || !user.isAdmin) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    if (user.password && currentPassword) {
+      const isValidPassword = await bcrypt.compare(currentPassword, user.password);
+      
+      if (!isValidPassword) {
+        return res.status(401).json({ error: 'Current password is incorrect' });
+      }
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        password: hashedPassword,
+        passwordSetAt: new Date(),
+      },
+    });
+
+    console.log('✅ Admin password changed:', user.email);
+
+    res.json({
+      success: true,
+      message: 'Password changed successfully',
+    });
+  } catch (error: any) {
+    console.error('Failed to change password:', error);
+    res.status(500).json({ error: 'Failed to change password' });
   }
 });
+
+router.post('/oauth/admin/request-reset', async (req, res) => {
+  const { email } = req.body;
+
+  if (!email) {
+    return res.status(400).json({ error: 'Email is required' });
+  }
+
+  try {
+    const adminEmail = await prisma.adminEmail.findUnique({
+      where: { email: email.toLowerCase() },
+    });
+
+    if (!adminEmail || !adminEmail.isActive) {
+      return res.json({ 
+        success: true, 
+        message: 'If this email is registered, you will receive reset instructions.' 
+      });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { email: email.toLowerCase() },
+    });
+
+    let resetToken: string | undefined;
+
+    if (user && user.isAdmin) {
+      resetToken = jwt.sign(
+        { userId: user.id, email: user.email, type: 'password-reset' },
+        process.env.JWT_SECRET!,
+        { expiresIn: '1h' }
+      );
+
+      console.log('🔐 Password reset token for', email);
+      console.log('Reset link:', `${process.env.FRONTEND_URL}/admin/reset-password?token=${resetToken}`);
+    }
+
+    res.json({ 
+      success: true, 
+      message: 'If this email is registered, you will receive reset instructions.',
+      ...(process.env.NODE_ENV === 'development' && resetToken && { resetToken }),
+    });
+  } catch (error: any) {
+    console.error('Password reset request failed:', error);
+    res.status(500).json({ error: 'Failed to process request' });
+  }
+});
+
+router.post('/oauth/admin/reset-password', async (req, res) => {
+  const { token, newPassword } = req.body;
+
+  if (!token || !newPassword) {
+    return res.status(400).json({ error: 'Token and new password are required' });
+  }
+
+  if (newPassword.length < 8) {
+    return res.status(400).json({ error: 'Password must be at least 8 characters long' });
+  }
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET!) as { 
+      userId: string; 
+      email: string; 
+      type: string;
+    };
+
+    if (decoded.type !== 'password-reset') {
+      return res.status(400).json({ error: 'Invalid reset token' });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: decoded.userId },
+    });
+
+    if (!user || !user.isAdmin) {
+      return res.status(403).json({ error: 'Invalid reset token' });
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        password: hashedPassword,
+        passwordSetAt: new Date(),
+      },
+    });
+
+    console.log('✅ Admin password reset:', user.email);
+
+    res.json({
+      success: true,
+      message: 'Password reset successfully. You can now login.',
+    });
+  } catch (error: any) {
+    if (error.name === 'TokenExpiredError') {
+      return res.status(400).json({ error: 'Reset token has expired. Please request a new one.' });
+    }
+    
+    console.error('Password reset failed:', error);
+    res.status(500).json({ error: 'Failed to reset password' });
+  }
+});
+
+// ==========================================
+// PROGRESS SYNC
+// ==========================================
 
 router.post('/oauth/sync-progress', async (req, res) => {
   const { userId } = req.body;
@@ -983,7 +1578,10 @@ router.post('/oauth/sync-progress', async (req, res) => {
   }
 });
 
-// Test email endpoint (optional - for testing)
+// ==========================================
+// TEST ENDPOINT
+// ==========================================
+
 router.post('/oauth/test-email', async (req, res) => {
   const { email } = req.body;
   
@@ -1002,7 +1600,7 @@ router.post('/oauth/test-email', async (req, res) => {
       });
     } else {
       res.status(500).json({ 
-        error: 'Failed to send email. Check your Resend API key.' 
+        error: 'Failed to send email. Check your API key.' 
       });
     }
   } catch (error: any) {
