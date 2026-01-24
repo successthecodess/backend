@@ -969,8 +969,23 @@ router.post('/oauth/student/verify-magic-link', async (req, res) => {
     });
 
     if (user) {
-      // EXISTING USER - Only update basic info, DON'T overwrite tags
-      console.log('👤 Existing user login - preserving current permissions');
+      // EXISTING USER - Merge tags from GHL with current tags
+      console.log('👤 Existing user login');
+      
+      const ghlTags = ghlContact.tags || [];
+      const currentTags = user.ghlTags || [];
+      
+      // Preserve admin-added tags
+      const adminAddedTags = currentTags.filter((tag: string) => 
+        !ghlTags.includes(tag)
+      );
+      
+      // Merge all tags
+      const mergedTags = Array.from(new Set([...ghlTags, ...adminAddedTags]));
+      
+      console.log(`   Current tags: ${currentTags.join(', ')}`);
+      console.log(`   GHL tags: ${ghlTags.join(', ')}`);
+      console.log(`   Merged tags: ${mergedTags.join(', ')}`);
       
       user = await prisma.user.update({
         where: { id: user.id },
@@ -980,13 +995,13 @@ router.post('/oauth/student/verify-magic-link', async (req, res) => {
           ghlUserId: ghlContact.id,
           ghlLocationId: companyAuth.locationId,
           ghlCompanyId: companyAuth.companyId,
-          // DON'T UPDATE TAGS - preserve admin-set permissions
+          ghlTags: mergedTags, // Use merged tags
           lastActive: new Date(),
         },
       });
     } else {
-      // NEW USER - Create with base permissions and "new-student" tag
-      console.log('🆕 New user - creating with base permissions');
+      // NEW USER - Create with GHL tags
+      console.log('🆕 New user - creating account');
       
       user = await prisma.user.create({
         data: {
@@ -995,7 +1010,7 @@ router.post('/oauth/student/verify-magic-link', async (req, res) => {
           ghlUserId: ghlContact.id,
           ghlLocationId: companyAuth.locationId,
           ghlCompanyId: companyAuth.companyId,
-          ghlTags: ['new-student'],
+          ghlTags: ghlContact.tags || ['new-studentlogin', 'self-registered'],
           isAdmin: false,
           isStaff: false,
           role: 'STUDENT',
@@ -1007,6 +1022,7 @@ router.post('/oauth/student/verify-magic-link', async (req, res) => {
       });
     }
 
+    // Check for admin access AFTER tag merge
     await checkAndGrantAdminAccess(user.email, user.id);
 
     user = await prisma.user.findUnique({
@@ -1025,7 +1041,7 @@ router.post('/oauth/student/verify-magic-link', async (req, res) => {
     );
 
     console.log('✅ MAGIC LINK VERIFIED - LOGIN SUCCESSFUL');
-    console.log('   User tags:', user.ghlTags);
+    console.log('   Final tags:', user.ghlTags);
     console.log('========================================\n');
 
     res.json({
@@ -1062,7 +1078,6 @@ router.post('/oauth/student/verify-magic-link', async (req, res) => {
     });
   }
 });
-
 // ==========================================
 // STUDENT SIGNUP
 // ==========================================
@@ -1156,7 +1171,7 @@ router.post('/oauth/student/signup', async (req, res) => {
       email,
       locationId: companyAuth.locationId,
       source: 'AP CS Question Bank - Self Registration',
-      tags: ['new-student'],
+      tags: ['new-studentsignup', 'self-registered'],
       customFields: [
         { key: 'total_questions_answered', value: '0' },
         { key: 'overall_accuracy', value: '0' },

@@ -329,7 +329,12 @@ router.post('/users/:id/sync-tags', requireAdmin, async (req, res) => {
 
     const user = await prisma.user.findUnique({
       where: { id },
-      select: { ghlUserId: true, ghlCompanyId: true }
+      select: { 
+        ghlUserId: true, 
+        ghlCompanyId: true,
+        ghlTags: true,
+        email: true 
+      }
     });
 
     if (!user || !user.ghlUserId || !user.ghlCompanyId) {
@@ -355,17 +360,24 @@ router.post('/users/:id/sync-tags', requireAdmin, async (req, res) => {
       }
     );
 
-    const tags = contactResponse.data.contact.tags || [];
+    const ghlTags = contactResponse.data.contact.tags || [];
+    const currentTags = user.ghlTags || [];
 
-    // Update user with tags
+    console.log(`🔄 Syncing tags for ${user.email}:`);
+    console.log(`   Current platform tags: ${currentTags.join(', ') || 'none'}`);
+    console.log(`   Tags from GHL/Tutor Boss: ${ghlTags.join(', ') || 'none'}`);
+    console.log(`   ✅ Platform will now match GHL exactly`);
+
+    // FIXED: Replace platform tags with GHL tags (exact match)
     const updatedUser = await prisma.user.update({
       where: { id },
-      data: { ghlTags: tags }
+      data: { ghlTags: ghlTags }
     });
 
     res.json({
       success: true,
-      tags,
+      message: 'Tags synced successfully. Platform now matches GHL/Tutor Boss.',
+      tags: ghlTags,
       user: updatedUser
     });
   } catch (error: any) {
@@ -387,12 +399,14 @@ router.post('/users/sync-all-tags', requireAdmin, async (req, res) => {
         ghlUserId: true,
         ghlCompanyId: true,
         email: true,
+        ghlTags: true,
       }
     });
 
     let synced = 0;
     let failed = 0;
     const errors: any[] = [];
+    const syncResults: any[] = [];
 
     for (const user of users) {
       try {
@@ -417,11 +431,24 @@ router.post('/users/sync-all-tags', requireAdmin, async (req, res) => {
           }
         );
 
-        const tags = contactResponse.data.contact.tags || [];
+        const ghlTags = contactResponse.data.contact.tags || [];
+        const currentTags = user.ghlTags || [];
 
+        console.log(`🔄 Syncing tags for ${user.email}:`);
+        console.log(`   Before: ${currentTags.join(', ') || 'none'}`);
+        console.log(`   After:  ${ghlTags.join(', ') || 'none'}`);
+
+        // FIXED: Replace platform tags with GHL tags (exact match)
         await prisma.user.update({
           where: { id: user.id },
-          data: { ghlTags: tags }
+          data: { ghlTags: ghlTags }
+        });
+
+        syncResults.push({
+          email: user.email,
+          before: currentTags,
+          after: ghlTags,
+          changed: JSON.stringify(currentTags.sort()) !== JSON.stringify(ghlTags.sort())
         });
 
         synced++;
@@ -431,18 +458,28 @@ router.post('/users/sync-all-tags', requireAdmin, async (req, res) => {
       }
     }
 
+    const changedCount = syncResults.filter(r => r.changed).length;
+
+    console.log(`\n✅ Bulk tag sync complete:`);
+    console.log(`   Total users: ${users.length}`);
+    console.log(`   Successfully synced: ${synced}`);
+    console.log(`   Tags changed: ${changedCount}`);
+    console.log(`   Failed: ${failed}`);
+
     res.json({
       success: true,
       synced,
       failed,
       total: users.length,
+      changedCount,
+      message: `Successfully synced ${synced} users. ${changedCount} users had tag changes. Platform tags now match GHL/Tutor Boss.`,
       errors: errors.slice(0, 10),
+      sampleResults: syncResults.slice(0, 5), // Show first 5 for reference
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
 });
-
 // ==========================================
 // TAG MANAGEMENT (Admin Only)
 // ==========================================

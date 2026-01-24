@@ -54,13 +54,13 @@ export const deleteUser = asyncHandler(async (req: Request, res: Response) => {
         name: user.name,
         role: user.role,
       },
-      reason: 'Deleted from portal - user can sign up fresh',
+      reason: 'Deleted - user can sign up fresh',
     }
   );
 
   res.json({
     success: true,
-    message: `User ${user.email} deleted successfully from portal`,
+    message: `User ${user.email} deleted successfully `,
   });
 });
 export const getAdminStats = asyncHandler(async (req: Request, res: Response) => {
