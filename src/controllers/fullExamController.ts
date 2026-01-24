@@ -148,13 +148,62 @@ export const submitFullExam = asyncHandler(async (req: Request, res: Response) =
   });
 });
 
+// Helper function to deeply parse JSON fields
+function deepParseJson(data: any): any {
+  if (data === null || data === undefined) {
+    return data;
+  }
+
+  if (typeof data === 'string') {
+    try {
+      return JSON.parse(data);
+    } catch {
+      return data;
+    }
+  }
+
+  if (Array.isArray(data)) {
+    return data.map(item => deepParseJson(item));
+  }
+
+  if (typeof data === 'object') {
+    const parsed: any = {};
+    for (const key in data) {
+      parsed[key] = deepParseJson(data[key]);
+    }
+    return parsed;
+  }
+
+  return data;
+}
+
 // Get exam results with FRQ solutions AND RUBRICS
 export const getExamResults = asyncHandler(async (req: Request, res: Response) => {
   const { examAttemptId } = req.params;
 
   console.log('📊 Fetching exam results for:', examAttemptId);
 
-  const examAttempt = await fullExamService.getExamAttempt(examAttemptId);
+  // Fetch exam attempt with RAW query to ensure we get all JSON data
+  const examAttempt = await prisma.fullExamAttempt.findUnique({
+    where: { id: examAttemptId },
+    include: {
+      frqResponses: {
+        include: {
+          question: true, // This gets the raw question data including frqParts JSON
+        },
+        orderBy: { frqNumber: 'asc' },
+      },
+      mcqResponses: {
+        select: {
+          isCorrect: true,
+        },
+      },
+    },
+  });
+
+  if (!examAttempt) {
+    throw new AppError('Exam attempt not found', 404);
+  }
 
   if (examAttempt.status !== 'GRADED') {
     return res.status(200).json({
@@ -170,70 +219,97 @@ export const getExamResults = asyncHandler(async (req: Request, res: Response) =
   const apScoreRanges = fullExamService.calculateEstimatedAPRange(examAttempt.mcqScore || 0);
 
   // Parse JSON fields
-  const unitBreakdown = examAttempt.unitBreakdown 
-    ? (typeof examAttempt.unitBreakdown === 'string' 
-        ? JSON.parse(examAttempt.unitBreakdown) 
-        : examAttempt.unitBreakdown)
-    : null;
+  const unitBreakdown = deepParseJson(examAttempt.unitBreakdown);
+  const recommendations = deepParseJson(examAttempt.recommendations);
 
-  const recommendations = examAttempt.recommendations 
-    ? (typeof examAttempt.recommendations === 'string' 
-        ? JSON.parse(examAttempt.recommendations) 
-        : examAttempt.recommendations)
-    : null;
+  console.log('\n🔍 ========== FRQ DATA INSPECTION ==========');
+  
+  // Process FRQ details with DEEP parsing
+  const frqDetails = examAttempt.frqResponses.map((frq: any, index: number) => {
+    console.log(`\n📝 FRQ ${frq.frqNumber}:`);
+    console.log('  Raw question.frqParts type:', typeof frq.question?.frqParts);
 
-  // Include FRQ details with solutions AND rubrics
-  const frqDetails = examAttempt.frqResponses.map((frq: any) => {
-    console.log(`📝 Processing FRQ ${frq.frqNumber}:`, {
-      hasQuestion: !!frq.question,
-      hasParts: !!frq.question?.frqParts,
-      partsCount: frq.question?.frqParts?.length || 0,
+    // CRITICAL: Deep parse the frqParts JSON
+    let frqParts = deepParseJson(frq.question?.frqParts);
+    
+    console.log('  After deepParse is array:', Array.isArray(frqParts));
+
+    if (!Array.isArray(frqParts)) {
+      console.log('  ⚠️ frqParts is not an array, converting to empty array');
+      frqParts = [];
+    }
+
+    console.log('  Parts count:', frqParts.length);
+
+    // Process each part
+    const processedParts = frqParts.map((part: any, partIndex: number) => {
+      console.log(`  \n  Part ${part.partLetter}:`);
+      
+      // 🔥 FIX: The field is called rubricPoints, NOT rubricItems!
+      console.log('    Raw rubricPoints type:', typeof part.rubricPoints);
+      console.log('    Raw rubricPoints value:', part.rubricPoints);
+      
+      // CRITICAL: Deep parse rubricPoints (not rubricItems!)
+      let rubricItems = deepParseJson(part.rubricPoints);
+      
+      console.log('    After deepParse type:', typeof rubricItems);
+      console.log('    After deepParse is array:', Array.isArray(rubricItems));
+      console.log('    Rubric items count:', Array.isArray(rubricItems) ? rubricItems.length : 0);
+
+      if (!Array.isArray(rubricItems)) {
+        console.log('    ⚠️ rubricItems is not an array, converting to empty array');
+        rubricItems = [];
+      }
+
+      if (rubricItems.length > 0) {
+        console.log('    ✅ Rubric items:', rubricItems.map((r: any) => ({
+          criterion: r.criterion,
+          points: r.points,
+        })));
+      } else {
+        console.log('    ❌ NO rubric items found!');
+      }
+
+      return {
+        partLetter: part.partLetter,
+        partDescription: part.partDescription,
+        maxPoints: part.maxPoints,
+        promptText: part.promptText,
+        rubricItems: rubricItems, // Now correctly parsed from rubricPoints
+        sampleSolution: part.sampleSolution || '',
+      };
     });
 
-    // Parse frqParts if it's a string
-    let frqParts = frq.question?.frqParts;
-    if (typeof frqParts === 'string') {
-      try {
-        frqParts = JSON.parse(frqParts);
-      } catch (error) {
-        console.error('Failed to parse frqParts:', error);
-        frqParts = [];
-      }
-    }
+   // const rubricCount = processedParts.reduce((sum, p) => sum + (p.rubricItems?.length || 0), 0);
+   // console.log(`  \n  ✅ Total rubric items for FRQ ${frq.frqNumber}: ${rubricCount}`);
 
     return {
       frqNumber: frq.frqNumber,
       userCode: frq.userCode,
       partResponses: frq.partResponses,
       timeSpent: frq.timeSpent,
-      // Include the complete question with rubrics
       question: {
         questionText: frq.question?.questionText || '',
         promptText: frq.question?.promptText || '',
         starterCode: frq.question?.starterCode || '',
         maxPoints: frq.question?.maxPoints || 9,
         explanation: frq.question?.explanation || '',
-        // IMPORTANT: Include the rubrics for each part
-        frqParts: Array.isArray(frqParts) ? frqParts.map((part: any) => ({
-          partLetter: part.partLetter,
-          partDescription: part.partDescription,
-          maxPoints: part.maxPoints,
-          // RUBRIC DATA - this is what was missing
-          rubricItems: Array.isArray(part.rubricItems) ? part.rubricItems : [],
-          sampleSolution: part.sampleSolution || '',
-        })) : [],
+        frqParts: processedParts,
       },
     };
   });
 
-  console.log('✅ Returning FRQ details with rubrics:', {
-    frqCount: frqDetails.length,
-    hasRubrics: frqDetails.map((f: any) => ({
-      frqNumber: f.frqNumber,
-      partsCount: f.question?.frqParts?.length || 0,
-      hasRubricData: f.question?.frqParts?.some((p: any) => p.rubricItems?.length > 0),
-    })),
+  console.log('\n✅ ========== FINAL RUBRIC SUMMARY ==========');
+  frqDetails.forEach((f: any) => {
+    const totalRubrics = f.question.frqParts.reduce((sum: number, p: any) => 
+      sum + (p.rubricItems?.length || 0), 0
+    );
+    console.log(`FRQ ${f.frqNumber}: ${f.question.frqParts.length} parts, ${totalRubrics} total rubric items`);
+    f.question.frqParts.forEach((p: any) => {
+      console.log(`  Part ${p.partLetter}: ${p.rubricItems?.length || 0} rubric items`);
+    });
   });
+  console.log('==========================================\n');
 
   res.status(200).json({
     status: 'success',
@@ -247,7 +323,7 @@ export const getExamResults = asyncHandler(async (req: Request, res: Response) =
       strengths: examAttempt.strengths,
       weaknesses: examAttempt.weaknesses,
       recommendations,
-      frqDetails, // Now includes complete rubrics
+      frqDetails,
       submittedAt: examAttempt.submittedAt,
       totalTimeSpent: examAttempt.totalTimeSpent,
     },
