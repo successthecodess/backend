@@ -805,6 +805,10 @@ router.get('/oauth/my-access', async (req, res) => {
 // MAGIC LINK AUTHENTICATION
 // ==========================================
 
+// ==========================================
+// MAGIC LINK AUTHENTICATION
+// ==========================================
+
 router.post('/oauth/student/request-login', async (req, res) => {
   const { email } = req.body;
 
@@ -821,8 +825,10 @@ router.post('/oauth/student/request-login', async (req, res) => {
     });
 
     if (!companyAuth) {
+      console.log('❌ No company authorization found');
+      console.log('========================================\n');
       return res.status(400).json({ 
-        error: 'Company not authorized. Admin must set up GHL integration first at /admin/ghl-setup' 
+        error: 'System not configured. Please contact administrator.' 
       });
     }
 
@@ -830,14 +836,19 @@ router.post('/oauth/student/request-login', async (req, res) => {
     try {
       accessToken = await getValidToken(companyAuth);
     } catch (refreshError: any) {
+      console.log('❌ Token refresh failed');
+      console.log('========================================\n');
       return res.status(401).json({ 
-        error: 'Session expired. Admin needs to re-authorize at /admin/ghl-setup'
+        error: 'System configuration error. Please contact administrator.' 
       });
     }
 
+    // SEARCH FOR CONTACT IN GHL
     let ghlContact: any = null;
     let retryCount = 0;
     const maxRetries = 2;
+
+    console.log('🔍 Searching for contact in TutorBoss...');
 
     while (!ghlContact && retryCount <= maxRetries) {
       try {
@@ -855,8 +866,10 @@ router.post('/oauth/student/request-login', async (req, res) => {
             accessToken = await refreshCompanyToken(companyAuth.companyId, companyAuth.refreshToken);
             retryCount++;
           } catch {
+            console.log('❌ Token refresh failed during search');
+            console.log('========================================\n');
             return res.status(401).json({ 
-              error: 'Session expired. Admin needs to re-authorize at /admin/ghl-setup' 
+              error: 'System configuration error. Please contact administrator.' 
             });
           }
         } else {
@@ -865,16 +878,26 @@ router.post('/oauth/student/request-login', async (req, res) => {
       }
     }
 
+    // CRITICAL FIX: Only send magic link if contact exists in TutorBoss
     if (!ghlContact) {
-      console.log('❌ Email not found in TutorBoss');
+      console.log('❌ Email NOT found in TutorBoss');
+      console.log('   This user is not authorized to access the system');
       console.log('========================================\n');
       
+      // Return success message for security (don't reveal if email exists or not)
+      // But don't actually send the email
       return res.json({
         success: true,
-        message: 'If this email is registered, you will receive a login link shortly.'
+        message: 'If this email is registered with us, you will receive a login link shortly.'
       });
     }
 
+    console.log('✅ Contact found in TutorBoss');
+    console.log('   Name:', `${ghlContact.firstName} ${ghlContact.lastName}`);
+    console.log('   GHL ID:', ghlContact.id);
+    console.log('   Tags:', ghlContact.tags);
+
+    // Generate magic link token
     const magicToken = jwt.sign(
       {
         email: ghlContact.email,
@@ -885,10 +908,12 @@ router.post('/oauth/student/request-login', async (req, res) => {
       { expiresIn: '15m' }
     );
 
+    // Send magic link email
     const emailSent = await sendMagicLink(ghlContact.email, magicToken);
 
     if (!emailSent) {
       console.error('❌ Failed to send email');
+      console.log('========================================\n');
       return res.status(500).json({ 
         error: 'Failed to send login link. Please try again or contact support.'
       });
@@ -905,9 +930,14 @@ router.post('/oauth/student/request-login', async (req, res) => {
   } catch (error: any) {
     console.error('❌ MAGIC LINK REQUEST FAILED');
     console.error('   Error:', error.message);
+    if (error.response?.data) {
+      console.error('   GHL Response:', error.response.data);
+    }
     console.error('========================================\n');
+    
+    // Generic error message for security
     res.status(500).json({ 
-      error: 'Request failed. Please try again.'
+      error: 'Request failed. Please try again or contact support.'
     });
   }
 });
