@@ -46,7 +46,7 @@
     "rate-limiter-flexible": "^9.0.1",
     "remark-breaks": "^4.0.0",
     "resend": "^6.7.0",
-    "stripe": "^20.0.0",
+    "stripe": "^20.2.0",
     "uuid": "^13.0.0"
   },
   "devDependencies": {

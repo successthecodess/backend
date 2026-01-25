@@ -67,12 +67,18 @@ model User {
   name              String?
   password          String?
   passwordSetAt    DateTime?
+  
   phone     String?
   refreshTokens   RefreshToken[]  
   fullExamAttempts    FullExamAttempt[]
   auditLogs       AuditLog[] 
   hasUsedFreeTrial Boolean @default(false)
   freeTrialCompletedAt DateTime?
+  subscriptionStatus   SubscriptionStatus  @default(FREE)
+  subscriptionId       String?             // Stripe subscription ID
+  stripeCustomerId     String?             // Stripe customer ID
+  subscriptionEndsAt   DateTime?
+  lastPaymentDate      DateTime?
   ghlUserId         String?   @unique
   ghlAccessToken    String?   @db.Text
   ghlRefreshToken   String?   @db.Text
@@ -98,9 +104,16 @@ model User {
   achievements      UserAchievement[]
 
   @@index([email])
+  @@index([subscriptionStatus])
   @@map("users")
 }
-
+enum SubscriptionStatus {
+  FREE
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  TRIALING
+}
 model GHLCompanyAuth {
   id              String   @id @default(cuid())
   companyId       String   @unique
