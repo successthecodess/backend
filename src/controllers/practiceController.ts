@@ -401,3 +401,83 @@ export const getSessionResults = asyncHandler(async (req: Request, res: Response
     },
   });
 });
+export const getSessionAnswers = asyncHandler(async (req: Request, res: Response) => {
+  const { sessionId } = req.params;
+
+  console.log('📋 Getting session answers for:', sessionId);
+
+  const session = await prisma.studySession.findUnique({
+    where: { id: sessionId },
+    include: {
+      responses: {
+        include: {
+          question: {
+            select: {
+              id: true,
+              questionText: true,
+              options: true,
+              correctAnswer: true,
+              explanation: true,
+              difficulty: true,
+              topic: {
+                select: {
+                  id: true,
+                  name: true,
+                },
+              },
+              unit: {
+                select: {
+                  id: true,
+                  name: true,
+                  unitNumber: true,
+                },
+              },
+            },
+          },
+        },
+        orderBy: {
+          createdAt: 'asc',
+        },
+      },
+    },
+  });
+
+  if (!session) {
+    return res.status(404).json({
+      success: false,
+      message: 'Session not found',
+    });
+  }
+
+  // Format the answers for the frontend
+  const answers = session.responses.map((response: any) => ({
+    id: response.id,
+    questionId: response.questionId,
+    userAnswer: response.userAnswer,
+    isCorrect: response.isCorrect,
+    timeSpent: response.timeSpent,
+    createdAt: response.createdAt,
+    question: {
+      id: response.question.id,
+      questionText: response.question.questionText,
+      options: response.question.options,
+      correctAnswer: response.question.correctAnswer,
+      explanation: response.question.explanation,
+      difficulty: response.question.difficulty,
+      topic: response.question.topic,
+      unit: response.question.unit,
+    },
+  }));
+
+  console.log('✅ Returning', answers.length, 'answers');
+
+  res.status(200).json({
+    success: true,
+    data: {
+      sessionId: session.id,
+      totalQuestions: answers.length,
+      correctAnswers: answers.filter(a => a.isCorrect).length,
+      answers,
+    },
+  });
+});

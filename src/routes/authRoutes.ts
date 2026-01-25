@@ -959,6 +959,13 @@ router.post('/oauth/student/verify-magic-link', async (req, res) => {
 
     const fullName = `${ghlContact.firstName || ''} ${ghlContact.lastName || ''}`.trim();
     
+    // FIXED: Ensure apcsa-self-registered tag is ALWAYS included
+    const ghlTags = ghlContact.tags || [];
+    const ensuredTags = Array.from(new Set([
+      ...ghlTags,
+      'apcsa-self-registered' // Always add this tag
+    ]));
+    
     let user = await prisma.user.findFirst({
       where: {
         OR: [
@@ -969,10 +976,9 @@ router.post('/oauth/student/verify-magic-link', async (req, res) => {
     });
 
     if (user) {
-      // EXISTING USER - Merge tags from GHL with current tags
+      // EXISTING USER - Merge tags and ensure apcsa-self-registered is included
       console.log('👤 Existing user login');
       
-      const ghlTags = ghlContact.tags || [];
       const currentTags = user.ghlTags || [];
       
       // Preserve admin-added tags
@@ -980,8 +986,12 @@ router.post('/oauth/student/verify-magic-link', async (req, res) => {
         !ghlTags.includes(tag)
       );
       
-      // Merge all tags
-      const mergedTags = Array.from(new Set([...ghlTags, ...adminAddedTags]));
+      // Merge all tags and ALWAYS include apcsa-self-registered
+      const mergedTags = Array.from(new Set([
+        ...ghlTags,
+        ...adminAddedTags,
+        'apcsa-self-registered' // Ensure this tag is always present
+      ]));
       
       console.log(`   Current tags: ${currentTags.join(', ')}`);
       console.log(`   GHL tags: ${ghlTags.join(', ')}`);
@@ -995,12 +1005,33 @@ router.post('/oauth/student/verify-magic-link', async (req, res) => {
           ghlUserId: ghlContact.id,
           ghlLocationId: companyAuth.locationId,
           ghlCompanyId: companyAuth.companyId,
-          ghlTags: mergedTags, // Use merged tags
+          ghlTags: mergedTags, // Use merged tags with apcsa-self-registered
           lastActive: new Date(),
         },
       });
+
+      // ALSO UPDATE GHL CONTACT to ensure tag is synced there
+      try {
+        await axios.put(
+          `${GHL_API_BASE}/contacts/${ghlContact.id}`,
+          {
+            tags: mergedTags,
+          },
+          {
+            headers: {
+              'Authorization': `Bearer ${accessToken}`,
+              'Version': '2021-07-28',
+              'Content-Type': 'application/json',
+            },
+          }
+        );
+        console.log('✅ Tags synced to GHL contact');
+      } catch (syncError) {
+        console.error('⚠️ Failed to sync tags to GHL:', syncError);
+        // Don't fail the login if tag sync fails
+      }
     } else {
-      // NEW USER - Create with GHL tags
+      // NEW USER - Create with apcsa-self-registered tag
       console.log('🆕 New user - creating account');
       
       user = await prisma.user.create({
@@ -1010,7 +1041,7 @@ router.post('/oauth/student/verify-magic-link', async (req, res) => {
           ghlUserId: ghlContact.id,
           ghlLocationId: companyAuth.locationId,
           ghlCompanyId: companyAuth.companyId,
-          ghlTags: ghlContact.tags || ['new-studentlogin', 'self-registered'],
+          ghlTags: ensuredTags, // Use tags with apcsa-self-registered
           isAdmin: false,
           isStaff: false,
           role: 'STUDENT',
@@ -1020,11 +1051,35 @@ router.post('/oauth/student/verify-magic-link', async (req, res) => {
           isPremium: false,
         },
       });
+
+      // UPDATE GHL CONTACT to add tag if not present
+      if (!ghlTags.includes('apcsa-self-registered')) {
+        try {
+          await axios.put(
+            `${GHL_API_BASE}/contacts/${ghlContact.id}`,
+            {
+              tags: ensuredTags,
+            },
+            {
+              headers: {
+                'Authorization': `Bearer ${accessToken}`,
+                'Version': '2021-07-28',
+                'Content-Type': 'application/json',
+              },
+            }
+          );
+          console.log('✅ apcsa-self-registered tag added to GHL contact');
+        } catch (syncError) {
+          console.error('⚠️ Failed to add tag to GHL:', syncError);
+          // Don't fail the login if tag sync fails
+        }
+      }
     }
 
     // Check for admin access AFTER tag merge
     await checkAndGrantAdminAccess(user.email, user.id);
 
+    // Refresh user data
     user = await prisma.user.findUnique({
       where: { id: user.id }
     }) || user;
@@ -1171,7 +1226,7 @@ router.post('/oauth/student/signup', async (req, res) => {
       email,
       locationId: companyAuth.locationId,
       source: 'AP CS Question Bank - Self Registration',
-      tags: ['new-studentsignup', 'self-registered'],
+      tags: ['new-studentsignup', 'apcsa-self-registered'],
       customFields: [
         { key: 'total_questions_answered', value: '0' },
         { key: 'overall_accuracy', value: '0' },
