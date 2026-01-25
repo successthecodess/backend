@@ -33,7 +33,7 @@ async function main() {
       name: 'practice_test',
       displayName: 'Practice Test Access',
       description: 'Take full-length practice tests',
-      requiredGhlTag: 'apcs-test-access',
+      requiredGhlTag: 'apcsa-test-access',
       requiresPremium: false,
       requiresStaff: false,
       isEnabled: true,
@@ -42,7 +42,7 @@ async function main() {
       name: 'exam_mode',
       displayName: 'Official Exam Mode',
       description: 'Full exam experience with detailed performance report and AP score prediction',
-      requiredGhlTag: 'apcs-exam',
+      requiredGhlTag: 'apcsa-exam',
       requiresPremium: true, // Premium required for detailed analytics
       requiresStaff: false,
       isEnabled: true,

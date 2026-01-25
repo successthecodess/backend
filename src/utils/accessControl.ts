@@ -6,8 +6,8 @@ import prisma from '../config/database.js';
  */
 export const TAG_HIERARCHY = {
   'free-trial-completed': 1,
-  'apcs-test-accesss': 2, // Practice tests only
-  'apcs-test-access': 3, // Full course access
+  'apcsa-test-accesss': 2, // Practice tests only
+  'apcsa-test-access': 3, // Full course access
   'premium-access': 4, // Everything
 } as const;
 
@@ -63,10 +63,10 @@ export function getAccessLevel(userTags: string[]): {
   return {
     level: highestLevel,
     highestTag,
-    hasFullAccess: highestLevel >= TAG_HIERARCHY['apcs-test-access'],
-    hasPracticeTestAccess: highestLevel >= TAG_HIERARCHY['apcs-test-access'],
-    // apcs-exam is checked separately (not in hierarchy)
-    canAccessPremiumExam: userTags.includes('apcs-exam') || highestLevel >= TAG_HIERARCHY['apcs-test-access'],
+    hasFullAccess: highestLevel >= TAG_HIERARCHY['apcsa-test-access'],
+    hasPracticeTestAccess: highestLevel >= TAG_HIERARCHY['apcsa-test-access'],
+    // apcsa-exam is checked separately (not in hierarchy)
+    canAccessPremiumExam: userTags.includes('apcsa-exam') || highestLevel >= TAG_HIERARCHY['apcsa-test-access'],
     hasCompletedTrial: userTags.includes('free-trial-completed'),
   };
 }

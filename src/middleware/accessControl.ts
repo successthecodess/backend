@@ -6,8 +6,8 @@ import prisma from '../config/database.js';
 export const AccessTiers = {
   FREE_TRIAL: 'free-trial-only',
   BASIC: 'apcs-practice-access',
-  FULL: 'apcs-test-access', // Includes practice access
-  PREMIUM: 'apcs-exam', // Premium full exam access
+  FULL: 'apcsa-test-access', // Includes practice access
+  PREMIUM: 'apcsa-exam', // Premium full exam access
 } as const;
 
 export type AccessTier = 'none' | 'trial' | 'basic' | 'full' | 'premium';
