@@ -248,8 +248,8 @@ class FreeTrialService {
       const currentTags = contactResponse.data.contact.tags || [];
       
       // Add trial-completed tag if not already present
-      if (!currentTags.includes('trial-completed')) {
-        const updatedTags = [...currentTags, 'trial-completed'];
+      if (!currentTags.includes('apcsa-trial-completed')) {
+        const updatedTags = [...currentTags, 'apcsa-trial-completed'];
 
         await axios.put(
           `${GHL_API_BASE}/contacts/${user.ghlUserId}`,
