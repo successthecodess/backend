@@ -19,55 +19,9 @@ declare global {
   }
 }
 
-// Check if user is admin
-export const requireAdmin = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    if (!req.user) {
-      return res.status(401).json({ error: 'Authentication required' });
-    }
-
-    const user = await prisma.user.findUnique({
-      where: { id: req.user.userId },
-      select: { isAdmin: true, isStaff: true, role: true }
-    });
-
-    if (!user || (!user.isAdmin && user.role !== UserRole.ADMIN && user.role !== UserRole.SUPER_ADMIN)) {
-      return res.status(403).json({ 
-        error: 'Access denied. Admin privileges required.',
-        requiredRole: 'ADMIN'
-      });
-    }
-
-    next();
-  } catch (error) {
-    res.status(500).json({ error: 'Authorization check failed' });
-  }
-};
-
-// Check if user is staff
-export const requireStaff = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    if (!req.user) {
-      return res.status(401).json({ error: 'Authentication required' });
-    }
-
-    const user = await prisma.user.findUnique({
-      where: { id: req.user.userId },
-      select: { isStaff: true, isAdmin: true, role: true }
-    });
-
-    if (!user || (!user.isStaff && !user.isAdmin && user.role === UserRole.STUDENT)) {
-      return res.status(403).json({ 
-        error: 'Access denied. Staff privileges required.',
-        requiredRole: 'STAFF'
-      });
-    }
-
-    next();
-  } catch (error) {
-    res.status(500).json({ error: 'Authorization check failed' });
-  }
-};
+// Re-export requireAdmin and requireStaff from auth.ts to avoid duplication
+// The auth.ts implementations include audit logging for security events
+export { requireAdmin, requireStaff } from './auth.js';
 
 // Check feature access
 export const requireFeature = (featureName: string) => {

@@ -367,15 +367,37 @@ async function getProgressData(userId: string) {
   };
 }
 
+/**
+ * Check if user email is in the admin whitelist and grant admin access if so.
+ * This function includes security logging for audit purposes.
+ *
+ * Security notes:
+ * - Only grants access if email is in AdminEmail table AND isActive is true
+ * - All admin grants are logged for security auditing
+ * - The AdminEmail table should be protected and only modifiable by existing admins
+ */
 async function checkAndGrantAdminAccess(email: string, userId: string): Promise<boolean> {
   try {
+    const normalizedEmail = email.toLowerCase().trim();
+
+    // Validate email format before database query
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(normalizedEmail)) {
+      console.warn(`[SECURITY] Invalid email format in admin check: ${normalizedEmail}`);
+      return false;
+    }
+
     const adminEmail = await prisma.adminEmail.findUnique({
-      where: { 
-        email: email.toLowerCase(),
+      where: {
+        email: normalizedEmail,
       },
     });
 
     if (adminEmail && adminEmail.isActive) {
+      // Log the admin grant for security auditing
+      console.log(`[SECURITY] Admin access granted to: ${normalizedEmail} (userId: ${userId})`);
+      console.log(`[SECURITY] Admin email entry added by: ${adminEmail.addedBy} on ${adminEmail.addedAt}`);
+
       await prisma.user.update({
         where: { id: userId },
         data: {
@@ -387,14 +409,13 @@ async function checkAndGrantAdminAccess(email: string, userId: string): Promise<
           hasAccessToAnalytics: true,
         },
       });
-      
-      console.log('✅ Admin access granted to:', email);
+
       return true;
     }
-    
+
     return false;
   } catch (error) {
-    console.error('Failed to check admin access:', error);
+    console.error('[SECURITY] Failed to check admin access:', error);
     return false;
   }
 }

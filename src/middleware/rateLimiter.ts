@@ -4,6 +4,33 @@ import { getRedisClient } from '../config/redis.js';
 
 let authLimiter: RateLimiterRedis | RateLimiterMemory;
 
+/**
+ * Get the real client IP address, handling proxies and load balancers
+ * Checks X-Forwarded-For header first, then falls back to request IP
+ */
+function getClientIp(req: Request): string {
+  // X-Forwarded-For can contain multiple IPs: "client, proxy1, proxy2"
+  // The first one is the original client IP
+  const forwardedFor = req.headers['x-forwarded-for'];
+  if (forwardedFor) {
+    const ips = (typeof forwardedFor === 'string' ? forwardedFor : forwardedFor[0]).split(',');
+    const clientIp = ips[0].trim();
+    // Validate it looks like an IP address (basic check)
+    if (clientIp && clientIp !== 'unknown') {
+      return clientIp;
+    }
+  }
+
+  // Check X-Real-IP header (used by some proxies like nginx)
+  const realIp = req.headers['x-real-ip'];
+  if (realIp && typeof realIp === 'string') {
+    return realIp.trim();
+  }
+
+  // Fall back to Express's req.ip or socket address
+  return req.ip || req.socket.remoteAddress || 'unknown-client';
+}
+
 // Initialize rate limiter
 export function initRateLimiter() {
   try {
@@ -37,12 +64,12 @@ export const authRateLimiter = async (
   next: NextFunction
 ) => {
   try {
-    const key = req.ip || req.socket.remoteAddress || 'unknown';
+    const key = getClientIp(req);
     await authLimiter.consume(key);
     next();
   } catch (error: any) {
     const retryAfter = Math.ceil(error.msBeforeNext / 1000) || 900;
-    
+
     res.set('Retry-After', String(retryAfter));
     res.status(429).json({
       error: 'Too many authentication attempts. Please try again later.',
@@ -73,7 +100,7 @@ export function createApiRateLimiter(points: number = 100, duration: number = 60
 
   return async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const key = req.ip || req.socket.remoteAddress || 'unknown';
+      const key = getClientIp(req);
       await limiter.consume(key);
       next();
     } catch (error: any) {

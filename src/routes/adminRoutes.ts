@@ -5,6 +5,7 @@ import { AuditLogger } from '../utils/auditLogger.js';
 import { authenticateToken } from '../middleware/auth.js';
 import { deleteUser } from '../controllers/adminController.js';
 import axios from 'axios';
+import crypto from 'crypto';
 import {
   getAdminStats,
   getAllQuestions,
@@ -21,6 +22,41 @@ import freeTrialService from '../services/freeTrialService.js';
 const router = Router();
 
 const GHL_API_BASE = 'https://services.leadconnectorhq.com';
+
+/**
+ * Safely parse an integer with bounds checking
+ * Returns the default value if parsing fails or value is out of bounds
+ */
+function safeParseInt(
+  value: string | undefined,
+  defaultValue: number,
+  min: number = 1,
+  max: number = 1000
+): number {
+  if (!value) return defaultValue;
+  const parsed = parseInt(value, 10);
+  if (isNaN(parsed)) return defaultValue;
+  return Math.min(Math.max(parsed, min), max);
+}
+
+/**
+ * Generate an error ID for tracking while keeping details server-side
+ */
+function generateErrorId(): string {
+  return crypto.randomBytes(8).toString('hex');
+}
+
+/**
+ * Log error with ID and return generic message to client
+ */
+function handleError(error: any, context: string): { errorId: string; message: string } {
+  const errorId = generateErrorId();
+  console.error(`[${errorId}] ${context}:`, error);
+  return {
+    errorId,
+    message: 'An error occurred. Please try again or contact support.',
+  };
+}
 
 // All admin routes require authentication
 router.use(authenticateToken);
@@ -53,7 +89,8 @@ router.get('/features', requireAdmin, async (req, res) => {
     });
     res.json(features);
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    const { errorId, message } = handleError(error, 'Failed to fetch features');
+    res.status(500).json({ error: message, errorId });
   }
 });
 
@@ -75,7 +112,8 @@ router.post('/features', requireAdmin, async (req, res) => {
 
     res.json(feature);
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    const { errorId, message } = handleError(error, 'Failed to create feature');
+    res.status(500).json({ error: message, errorId });
   }
 });
 
@@ -99,7 +137,8 @@ router.put('/features/:id', requireAdmin, async (req, res) => {
 
     res.json(feature);
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    const { errorId, message } = handleError(error, 'Failed to update feature');
+    res.status(500).json({ error: message, errorId });
   }
 });
 
@@ -111,7 +150,8 @@ router.delete('/features/:id', requireAdmin, async (req, res) => {
     });
     res.json({ success: true });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    const { errorId, message } = handleError(error, 'Failed to delete feature');
+    res.status(500).json({ error: message, errorId });
   }
 });
 
@@ -127,7 +167,8 @@ router.get('/courses', requireAdmin, async (req, res) => {
     });
     res.json(courses);
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    const { errorId, message } = handleError(error, 'Failed to fetch courses');
+    res.status(500).json({ error: message, errorId });
   }
 });
 
@@ -147,7 +188,8 @@ router.post('/courses', requireAdmin, async (req, res) => {
 
     res.json(course);
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    const { errorId, message } = handleError(error, 'Failed to create course');
+    res.status(500).json({ error: message, errorId });
   }
 });
 
@@ -169,7 +211,8 @@ router.put('/courses/:id', requireAdmin, async (req, res) => {
 
     res.json(course);
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    const { errorId, message } = handleError(error, 'Failed to update course');
+    res.status(500).json({ error: message, errorId });
   }
 });
 
@@ -180,17 +223,20 @@ router.put('/courses/:id', requireAdmin, async (req, res) => {
 // Get all users
 router.get('/users', requireStaff, async (req, res) => {
   try {
-    const { page = 1, limit = 50, search, role } = req.query;
-    
+    // Safe integer parsing with bounds checking
+    const page = safeParseInt(req.query.page as string, 1, 1, 10000);
+    const limit = safeParseInt(req.query.limit as string, 50, 1, 100);
+    const { search, role } = req.query;
+
     const where: any = {};
-    
+
     if (search) {
       where.OR = [
         { email: { contains: search as string, mode: 'insensitive' } },
         { name: { contains: search as string, mode: 'insensitive' } },
       ];
     }
-    
+
     if (role && role !== 'all') {
       where.role = role;
     }
@@ -215,8 +261,8 @@ router.get('/users', requireStaff, async (req, res) => {
           createdAt: true,
           lastActive: true,
         },
-        skip: (Number(page) - 1) * Number(limit),
-        take: Number(limit),
+        skip: (page - 1) * limit,
+        take: limit,
         orderBy: { createdAt: 'desc' }
       }),
       prisma.user.count({ where })
@@ -226,13 +272,14 @@ router.get('/users', requireStaff, async (req, res) => {
       users,
       pagination: {
         total,
-        page: Number(page),
-        limit: Number(limit),
-        pages: Math.ceil(total / Number(limit))
+        page,
+        limit,
+        pages: Math.ceil(total / limit)
       }
     });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    const { errorId, message } = handleError(error, 'Failed to fetch users');
+    res.status(500).json({ error: message, errorId });
   }
 });
 
@@ -275,7 +322,8 @@ router.get('/users/:id', requireStaff, async (req, res) => {
 
     res.json(user);
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    const { errorId, message } = handleError(error, 'Failed to fetch user');
+    res.status(500).json({ error: message, errorId });
   }
 });
 
@@ -310,15 +358,16 @@ router.put('/users/:id/permissions', requireAdmin, async (req, res) => {
       data: updateData,
     });
 
-    console.log('✅ User permissions updated:', user.email);
+    console.log('User permissions updated:', user.email);
 
-    res.json({ 
+    res.json({
       success: true,
       user,
       message: 'Permissions updated successfully. User will see changes on next page refresh.'
     });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    const { errorId, message } = handleError(error, 'Failed to update user permissions');
+    res.status(500).json({ error: message, errorId });
   }
 });
 
@@ -381,8 +430,8 @@ router.post('/users/:id/sync-tags', requireAdmin, async (req, res) => {
       user: updatedUser
     });
   } catch (error: any) {
-    console.error('Tag sync error:', error);
-    res.status(500).json({ error: error.message });
+    const { errorId, message } = handleError(error, 'Tag sync failed');
+    res.status(500).json({ error: message, errorId });
   }
 });
 
@@ -477,7 +526,8 @@ router.post('/users/sync-all-tags', requireAdmin, async (req, res) => {
       sampleResults: syncResults.slice(0, 5), // Show first 5 for reference
     });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    const { errorId, message } = handleError(error, 'Bulk tag sync failed');
+    res.status(500).json({ error: message, errorId });
   }
 });
 // ==========================================
@@ -581,11 +631,8 @@ router.post('/users/:id/tags/add', requireAdmin, async (req, res) => {
       tags: updatedTags
     });
   } catch (error: any) {
-    console.error('Failed to add tag:', error);
-    res.status(500).json({ 
-      error: 'Failed to add tag to GHL',
-      details: error.response?.data || error.message
-    });
+    const { errorId, message } = handleError(error, 'Failed to add tag');
+    res.status(500).json({ error: message, errorId });
   }
 });
 
@@ -674,7 +721,7 @@ router.post('/users/:id/tags/remove', requireAdmin, async (req, res) => {
       data: { ghlTags: updatedTags }
     });
 
-    console.log(`✅ Tag "${tag}" removed from user ${user.email}`);
+    console.log(`Tag "${tag}" removed from user ${user.email}`);
 
     res.json({
       success: true,
@@ -682,11 +729,8 @@ router.post('/users/:id/tags/remove', requireAdmin, async (req, res) => {
       tags: updatedTags
     });
   } catch (error: any) {
-    console.error('Failed to remove tag:', error);
-    res.status(500).json({ 
-      error: 'Failed to remove tag from GHL',
-      details: error.response?.data || error.message
-    });
+    const { errorId, message } = handleError(error, 'Failed to remove tag');
+    res.status(500).json({ error: message, errorId });
   }
 });
 
@@ -702,7 +746,8 @@ router.get('/admin-emails', requireAdmin, async (req, res) => {
     });
     res.json(adminEmails);
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    const { errorId, message } = handleError(error, 'Failed to fetch admin emails');
+    res.status(500).json({ error: message, errorId });
   }
 });
 
@@ -750,8 +795,8 @@ router.post('/admin-emails', requireAdmin, async (req, res) => {
       });
     }
 
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       adminEmail,
       userUpdated: !!existingUser
     });
@@ -759,7 +804,8 @@ router.post('/admin-emails', requireAdmin, async (req, res) => {
     if (error.code === 'P2002') {
       return res.status(400).json({ error: 'This email is already an admin' });
     }
-    res.status(500).json({ error: error.message });
+    const { errorId, message } = handleError(error, 'Failed to add admin email');
+    res.status(500).json({ error: message, errorId });
   }
 });
 
@@ -782,7 +828,8 @@ router.delete('/admin-emails/:id', requireAdmin, async (req, res) => {
 
     res.json({ success: true });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    const { errorId, message } = handleError(error, 'Failed to remove admin email');
+    res.status(500).json({ error: message, errorId });
   }
 });
 
@@ -806,22 +853,25 @@ router.patch('/admin-emails/:id/toggle', requireAdmin, async (req, res) => {
 
     res.json(updated);
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    const { errorId, message } = handleError(error, 'Failed to toggle admin email status');
+    res.status(500).json({ error: message, errorId });
   }
 });
 
 // Get recent audit logs (admin only)
 router.get('/audit-logs', requireAdmin, async (req, res) => {
   try {
-    const limit = parseInt(req.query.limit as string) || 100;
+    // Safe integer parsing with bounds (min 1, max 500)
+    const limit = safeParseInt(req.query.limit as string, 100, 1, 500);
     const logs = await AuditLogger.getRecentLogs(limit);
-    
+
     res.json({
       status: 'success',
       data: { logs },
     });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    const { errorId, message } = handleError(error, 'Failed to fetch audit logs');
+    res.status(500).json({ error: message, errorId });
   }
 });
 
@@ -829,30 +879,34 @@ router.get('/audit-logs', requireAdmin, async (req, res) => {
 router.get('/audit-logs/user/:userId', requireAdmin, async (req, res) => {
   try {
     const { userId } = req.params;
-    const limit = parseInt(req.query.limit as string) || 50;
+    // Safe integer parsing with bounds (min 1, max 200)
+    const limit = safeParseInt(req.query.limit as string, 50, 1, 200);
     const logs = await AuditLogger.getUserLogs(userId, limit);
-    
+
     res.json({
       status: 'success',
       data: { logs },
     });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    const { errorId, message } = handleError(error, 'Failed to fetch user audit logs');
+    res.status(500).json({ error: message, errorId });
   }
 });
 
 // Get failed login attempts
 router.get('/audit-logs/failed-logins', requireAdmin, async (req, res) => {
   try {
-    const hours = parseInt(req.query.hours as string) || 24;
+    // Safe integer parsing with bounds (min 1 hour, max 168 hours / 1 week)
+    const hours = safeParseInt(req.query.hours as string, 24, 1, 168);
     const logs = await AuditLogger.getFailedLogins(hours);
-    
+
     res.json({
       status: 'success',
       data: { logs },
     });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    const { errorId, message } = handleError(error, 'Failed to fetch failed login logs');
+    res.status(500).json({ error: message, errorId });
   }
 });
 export default router;
