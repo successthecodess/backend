@@ -7,7 +7,7 @@ import adminFullExamRoutes from './routes/adminFullExam.js';
 import authRoutes from './routes/authRoutes.js';
 import practiceRoutes from './routes/practiceRoutes.js';
 import progressRoutes from './routes/progressRoutes.js'; 
-
+import adminPracticeTestRoutes from './routes/adminPracticeTests.js';
 import insightsRoutes from './routes/insightsRoutes.js';
 import adminRoutes from './routes/adminRoutes.js';
 import analyticsRoutes from './routes/analyticsRoutes.js';
@@ -39,6 +39,7 @@ app.use('/api/free-trial', freeTrialRoutes);
 app.use('/api/admin/exam-bank', adminExamBankRoutes);
 app.use('/api/full-exam', fullExamRoutes);
 app.use('/api/admin/full-exams', adminFullExamRoutes);
+app.use('/api/admin/practice-tests', adminPracticeTestRoutes);
 // Error handler
 app.use(errorHandler);
 
