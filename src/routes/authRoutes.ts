@@ -400,132 +400,6 @@ async function checkAndGrantAdminAccess(email: string, userId: string): Promise<
 }
 
 // ==========================================
-// DEBUG ENDPOINTS
-// ==========================================
-
-router.get('/oauth/debug/test-contact-fetch', async (req, res) => {
-  try {
-    const companyAuth = await prisma.gHLCompanyAuth.findFirst({
-      orderBy: { authorizedAt: 'desc' }
-    });
-
-    if (!companyAuth) {
-      return res.status(404).json({ error: 'No authorization found' });
-    }
-
-    const accessToken = await getValidToken(companyAuth);
-
-    const results: any = {
-      locationId: companyAuth.locationId,
-      companyId: companyAuth.companyId,
-      tests: {}
-    };
-
-    const startTime = Date.now();
-    const testContact = await searchContactByEmailParallel(
-      'test@example.com',
-      accessToken,
-      companyAuth.locationId!,
-      companyAuth.companyId
-    );
-    const duration = Date.now() - startTime;
-
-    results.parallelSearchTest = {
-      duration: `${duration}ms`,
-      found: !!testContact,
-      contact: testContact ? { email: testContact.email, name: `${testContact.firstName} ${testContact.lastName}` } : null,
-    };
-
-    res.json(results);
-  } catch (error: any) {
-    res.status(500).json({ 
-      error: error.message,
-      details: error.response?.data
-    });
-  }
-});
-
-router.get('/oauth/debug/token-status', async (req, res) => {
-  try {
-    const companyAuth = await prisma.gHLCompanyAuth.findFirst({
-      orderBy: { authorizedAt: 'desc' }
-    });
-
-    if (!companyAuth) {
-      return res.json({
-        status: 'not_found',
-        message: 'No company authorization found'
-      });
-    }
-
-    const now = new Date();
-    const expiry = new Date(companyAuth.tokenExpiry);
-    const timeUntilExpiry = expiry.getTime() - now.getTime();
-    const hoursUntilExpiry = timeUntilExpiry / (1000 * 60 * 60);
-
-    res.json({
-      status: 'found',
-      companyId: companyAuth.companyId,
-      locationId: companyAuth.locationId,
-      authorizedBy: companyAuth.authorizedBy,
-      authorizedAt: companyAuth.authorizedAt,
-      tokenExpiry: companyAuth.tokenExpiry,
-      currentTime: now,
-      isExpired: now >= expiry,
-      hoursUntilExpiry: hoursUntilExpiry.toFixed(2),
-      hasRefreshToken: !!companyAuth.refreshToken,
-      cacheSize: contactCache.size,
-    });
-  } catch (error: any) {
-    res.status(500).json({ 
-      error: error.message,
-    });
-  }
-});
-
-router.post('/oauth/debug/force-refresh', async (req, res) => {
-  try {
-    const companyAuth = await prisma.gHLCompanyAuth.findFirst({
-      orderBy: { authorizedAt: 'desc' }
-    });
-
-    if (!companyAuth) {
-      return res.status(404).json({ error: 'No authorization found' });
-    }
-
-    const newToken = await refreshCompanyToken(
-      companyAuth.companyId, 
-      companyAuth.refreshToken
-    );
-
-    const updated = await prisma.gHLCompanyAuth.findUnique({
-      where: { companyId: companyAuth.companyId }
-    });
-
-    res.json({
-      success: true,
-      message: 'Token refreshed successfully',
-      oldExpiry: companyAuth.tokenExpiry,
-      newExpiry: updated?.tokenExpiry,
-    });
-  } catch (error: any) {
-    res.status(500).json({ 
-      error: error.message,
-    });
-  }
-});
-
-router.post('/oauth/debug/clear-cache', async (req, res) => {
-  const sizeBefore = contactCache.size;
-  contactCache.clear();
-  res.json({
-    success: true,
-    message: 'Cache cleared',
-    entriesCleared: sizeBefore,
-  });
-});
-
-// ==========================================
 // ADMIN AUTHORIZATION
 // ==========================================
 
@@ -543,9 +417,18 @@ router.get('/oauth/admin/authorize', (req, res) => {
 
 router.get('/oauth/admin/callback', async (req, res) => {
   const { code, error } = req.query;
+  const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+
+  // Validate FRONTEND_URL to prevent open redirects
+  const allowedHosts = [
+    new URL(frontendUrl).host,
+    'localhost:3000',
+  ];
+
+  const redirectBase = `${frontendUrl}/admin/ghl-setup`;
 
   if (error || !code) {
-    return res.redirect(`${process.env.FRONTEND_URL}/admin/ghl-setup?error=authorization_failed`);
+    return res.redirect(`${redirectBase}?error=authorization_failed`);
   }
 
   try {
@@ -559,7 +442,7 @@ router.get('/oauth/admin/callback', async (req, res) => {
         redirect_uri: `${process.env.BACKEND_URL}/api/auth/oauth/admin/callback`,
       }),
       {
-        headers: { 
+        headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
           'Accept': 'application/json'
         }
@@ -568,6 +451,12 @@ router.get('/oauth/admin/callback', async (req, res) => {
 
     const { access_token, refresh_token, expires_in, locationId, companyId, userId } = tokenResponse.data;
     const expiryDate = new Date(Date.now() + (expires_in - 300) * 1000);
+
+    // Validate companyId format (should be alphanumeric with possible hyphens/underscores)
+    if (!companyId || !/^[a-zA-Z0-9_-]+$/.test(companyId)) {
+      console.error('Invalid companyId format received from GHL');
+      return res.redirect(`${redirectBase}?error=invalid_response`);
+    }
 
     const userResponse = await axios.get(
       `${GHL_API_BASE}/users/${userId}`,
@@ -598,9 +487,10 @@ router.get('/oauth/admin/callback', async (req, res) => {
 
     contactCache.clear();
 
-    res.redirect(`${process.env.FRONTEND_URL}/admin/ghl-setup?success=true&companyId=${companyId}`);
+    // Use encodeURIComponent for safety even after validation
+    res.redirect(`${redirectBase}?success=true&companyId=${encodeURIComponent(companyId)}`);
   } catch (error: any) {
-    res.redirect(`${process.env.FRONTEND_URL}/admin/ghl-setup?error=setup_failed`);
+    res.redirect(`${redirectBase}?error=setup_failed`);
   }
 });
 
@@ -1538,14 +1428,13 @@ router.post('/oauth/admin/request-reset', async (req, res) => {
         { expiresIn: '1h' }
       );
 
-      console.log('🔐 Password reset token for', email);
-      console.log('Reset link:', `${process.env.FRONTEND_URL}/admin/reset-password?token=${resetToken}`);
+      // TODO: Send password reset email using Resend instead of logging
+      // For now, token is generated but should be sent via secure email
     }
 
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       message: 'If this email is registered, you will receive reset instructions.',
-      ...(process.env.NODE_ENV === 'development' && resetToken && { resetToken }),
     });
   } catch (error: any) {
     console.error('Password reset request failed:', error);
